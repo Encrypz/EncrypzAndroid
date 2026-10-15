@@ -1,0 +1,26 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Encrypz.API.Dockerfile
+    restart: unless-stopped
+    environment:
+      Frontend__Url: ${FRONTEND_URL}
+      Frontend__AllowedOrigins: ${FRONTEND_URL}
+      GoogleDrive__ClientId: ${GOOGLE_CLIENT_ID}
+      GoogleDrive__ClientSecret: ${GOOGLE_CLIENT_SECRET}
+      ASPNETCORE_ENVIRONMENT: Production
+    ports:
+      - "5207:8080"
+
+  ui:
+    build:
+      context: .
+      dockerfile: Encrypz.UI.Dockerfile
+      args:
+        VITE_API_URL: ${API_URL}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
