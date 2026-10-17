@@ -1,8 +1,20 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
 }
+
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        file.inputStream().use { load(it) }
+    }
+}
+
+fun localProp(key: String): String =
+    (localProps.getProperty(key) ?: System.getenv(key) ?: "").replace("\"", "\\\"")
 
 android {
     namespace = "com.example.encrypz"
@@ -13,11 +25,19 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${localProp("GOOGLE_CLIENT_ID")}\"")
+        buildConfigField("String", "GOOGLE_CLIENT_SECRET", "\"${localProp("GOOGLE_CLIENT_SECRET")}\"")
+        buildConfigField("String", "MONGO_URI_TEMPLATE", "\"${localProp("MONGO_URI_TEMPLATE")}\"")
+        buildConfigField("String", "MONGO_USER", "\"${localProp("MONGO_USER")}\"")
+        buildConfigField("String", "MONGO_PASS", "\"${localProp("MONGO_PASS")}\"")
+        buildConfigField("String", "MONGO_SHARD_HOSTS", "\"${localProp("MONGO_SHARD_HOSTS")}\"")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -28,7 +48,7 @@ android {
     buildFeatures {
       compose = true
       aidl = false
-      buildConfig = false
+      buildConfig = true
       shaders = false
     }
 

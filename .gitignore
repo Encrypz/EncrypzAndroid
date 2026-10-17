@@ -486,3 +486,7 @@ $RECYCLE.BIN/
 # Frontend build output
 **/dist/
 *.tsbuildinfo
+
+# Android local secrets and compiled APK binaries
+*.apk
+local.properties
