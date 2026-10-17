@@ -5,17 +5,25 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Base64
 import com.example.encrypz.MainActivity
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 /**
  * Handles Google OAuth 2.0 Authorization Code & Refresh Token exchange using the configured
@@ -32,11 +40,14 @@ object LoopbackGoogleOAuthServer {
     const val REDIRECT_URI = "http://localhost:5207/api/Auth/google-callback"
     private const val GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
     private const val GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+    private const val GOOGLE_USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v2/userinfo"
 
     private const val PREFS_NAME = "encrypz_oauth_tokens_prefs"
     private const val KEY_ACCESS_TOKEN_PREFIX = "access_token_"
     private const val KEY_EXPIRES_AT_PREFIX = "expires_at_"
     private const val KEY_REFRESH_TOKEN_PREFIX = "refresh_token_"
+
+    private val oauthScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
     private var activeServerSocket: ServerSocket? = null
@@ -47,6 +58,42 @@ object LoopbackGoogleOAuthServer {
         val email: String?,
         val expiresInSeconds: Long
     )
+
+    /**
+     * Returns true if we have a non-expired access token or a saved refresh token for [email].
+     */
+    fun hasCachedOrRefreshToken(context: Context, email: String, fallbackRefreshTokenFromDb: String? = null): Boolean {
+        val cleanEmail = email.trim().lowercase()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val cachedAccess = prefs.getString("$KEY_ACCESS_TOKEN_PREFIX$cleanEmail", null)
+            ?: prefs.getString("${KEY_ACCESS_TOKEN_PREFIX}default", null)
+        val expiresAt = prefs.getLong("$KEY_EXPIRES_AT_PREFIX$cleanEmail", 0L)
+            .takeIf { it > 0L } ?: prefs.getLong("${KEY_EXPIRES_AT_PREFIX}default", 0L)
+
+        if (!cachedAccess.isNullOrBlank() && now < expiresAt - 60_000L) {
+            return true
+        }
+        val refreshToken = prefs.getString("$KEY_REFRESH_TOKEN_PREFIX$cleanEmail", null)
+            ?.takeIf { it.isNotBlank() }
+            ?: fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
+            ?: prefs.getString("${KEY_REFRESH_TOKEN_PREFIX}default", null)
+        return !refreshToken.isNullOrBlank()
+    }
+
+    /**
+     * Clears the cached short-lived access token so the next call refreshes it using the refresh token.
+     */
+    fun clearCachedAccessToken(context: Context, email: String) {
+        val cleanEmail = email.trim().lowercase()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .remove("$KEY_ACCESS_TOKEN_PREFIX$cleanEmail")
+            .remove("$KEY_EXPIRES_AT_PREFIX$cleanEmail")
+            .remove("${KEY_ACCESS_TOKEN_PREFIX}default")
+            .remove("${KEY_EXPIRES_AT_PREFIX}default")
+            .apply()
+    }
 
     /**
      * Returns a valid cached or refreshed OAuth 2.0 access token for [email] if one exists.
@@ -60,7 +107,9 @@ object LoopbackGoogleOAuthServer {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         val cachedAccess = prefs.getString("$KEY_ACCESS_TOKEN_PREFIX$cleanEmail", null)
+            ?: prefs.getString("${KEY_ACCESS_TOKEN_PREFIX}default", null)
         val expiresAt = prefs.getLong("$KEY_EXPIRES_AT_PREFIX$cleanEmail", 0L)
+            .takeIf { it > 0L } ?: prefs.getLong("${KEY_EXPIRES_AT_PREFIX}default", 0L)
         val now = System.currentTimeMillis()
 
         if (!cachedAccess.isNullOrBlank() && now < expiresAt - 60_000L) {
@@ -110,23 +159,30 @@ object LoopbackGoogleOAuthServer {
     }
 
     /**
-     * Starts the local loopback listener on `127.0.0.1:5207`, launches the Google OAuth 2.0
-     * consent page in the user's browser, waits for `/api/Auth/google-callback?code=...`,
-     * and exchanges the authorization code with [GoogleAuthConfig.CLIENT_ID] and
-     * [GoogleAuthConfig.CLIENT_SECRET] for a live Google Drive `access_token` and `refresh_token`.
+     * Starts the local loopback listener on port `5207` (accepting both IPv4 `127.0.0.1` and IPv6 `::1`),
+     * launches the Google OAuth 2.0 consent page in the user's browser, waits for
+     * `/api/Auth/google-callback?code=...`, and exchanges the authorization code with
+     * [GoogleAuthConfig.CLIENT_ID] and [GoogleAuthConfig.CLIENT_SECRET] for a live Google Drive
+     * `access_token` and `refresh_token`.
      */
     suspend fun authorizeViaLoopbackBrowser(
         context: Context,
         loginHintEmail: String?
-    ): OAuthTokenBundle? = withContext(Dispatchers.IO) {
+    ): OAuthTokenBundle? = withContext(oauthScope.coroutineContext) {
+        val appContext = context.applicationContext
+        if (GoogleAuthConfig.CLIENT_ID.isBlank() || GoogleAuthConfig.CLIENT_SECRET.isBlank()) {
+            return@withContext null
+        }
+
         try {
             activeServerSocket?.close()
         } catch (_: Exception) {
         }
 
         val server = try {
-            ServerSocket(LOOPBACK_PORT, 5, InetAddress.getByName("127.0.0.1")).apply {
+            ServerSocket().apply {
                 reuseAddress = true
+                bind(InetSocketAddress(LOOPBACK_PORT), 50)
                 soTimeout = 180_000 // 3 minutes timeout for user to tap Allow
             }
         } catch (_: Exception) {
@@ -135,6 +191,19 @@ object LoopbackGoogleOAuthServer {
         activeServerSocket = server
 
         try {
+            // Generate PKCE code_verifier & code_challenge (S256)
+            val verifierBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            val codeVerifier = Base64.encodeToString(
+                verifierBytes,
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+            )
+            val challengeBytes = MessageDigest.getInstance("SHA-256")
+                .digest(codeVerifier.toByteArray(Charsets.US_ASCII))
+            val codeChallenge = Base64.encodeToString(
+                challengeBytes,
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+            )
+
             val scopes = listOf(
                 "openid",
                 "email",
@@ -143,91 +212,137 @@ object LoopbackGoogleOAuthServer {
                 GoogleAuthConfig.SCOPE_DRIVE_APPDATA
             ).joinToString(" ")
 
+            val hasHint = !loginHintEmail.isNullOrBlank() && loginHintEmail.contains("@")
+            val promptParam = if (hasHint) "consent" else "select_account consent"
+
             val authUrlBuilder = StringBuilder(GOOGLE_AUTH_ENDPOINT)
                 .append("?client_id=").append(URLEncoder.encode(GoogleAuthConfig.CLIENT_ID, "UTF-8"))
                 .append("&redirect_uri=").append(URLEncoder.encode(REDIRECT_URI, "UTF-8"))
                 .append("&response_type=code")
                 .append("&scope=").append(URLEncoder.encode(scopes, "UTF-8"))
                 .append("&access_type=offline")
-                .append("&prompt=consent")
+                .append("&include_granted_scopes=true")
+                .append("&prompt=").append(URLEncoder.encode(promptParam, "UTF-8"))
+                .append("&code_challenge=").append(URLEncoder.encode(codeChallenge, "UTF-8"))
+                .append("&code_challenge_method=S256")
 
-            if (!loginHintEmail.isNullOrBlank() && loginHintEmail.contains("@")) {
+            if (hasHint) {
                 authUrlBuilder.append("&login_hint=")
-                    .append(URLEncoder.encode(loginHintEmail.trim(), "UTF-8"))
+                    .append(URLEncoder.encode(loginHintEmail!!.trim(), "UTF-8"))
             }
 
-            // Open the browser on the main thread
+            val authCodeDeferred = CompletableDeferred<String?>()
+
+            // Accept incoming loopback connections concurrently so Chrome preconnect sockets never block
+            val acceptJob = launch(Dispatchers.IO) {
+                while (isActive && !authCodeDeferred.isCompleted) {
+                    val clientSocket = try {
+                        server.accept()
+                    } catch (_: Exception) {
+                        break
+                    }
+                    launch(Dispatchers.IO) {
+                        try {
+                            clientSocket.use { socket ->
+                                socket.soTimeout = 8_000
+                                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                                val requestLine = reader.readLine() ?: return@use
+                                // Drain HTTP request headers until blank line to prevent TCP RST on socket close
+                                while (true) {
+                                    val headerLine = reader.readLine() ?: break
+                                    if (headerLine.isEmpty()) break
+                                }
+
+                                val pathPart = requestLine.split(" ").getOrNull(1) ?: ""
+                                if (pathPart.startsWith("/favicon.ico")) {
+                                    val notFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                    socket.getOutputStream().write(notFound.toByteArray(Charsets.UTF_8))
+                                    socket.getOutputStream().flush()
+                                    return@use
+                                }
+
+                                val query = pathPart.substringAfter('?', "")
+                                val params = parseQueryParams(query)
+                                val code = params["code"]
+                                val error = params["error"]
+
+                                val htmlBody = buildCompletionHtml(success = !code.isNullOrBlank())
+                                val htmlBytes = htmlBody.toByteArray(Charsets.UTF_8)
+                                val httpResponse = buildString {
+                                    append("HTTP/1.1 200 OK\r\n")
+                                    append("Content-Type: text/html; charset=UTF-8\r\n")
+                                    append("Cache-Control: no-store\r\n")
+                                    append("Content-Length: ${htmlBytes.size}\r\n")
+                                    append("Connection: close\r\n\r\n")
+                                }
+                                val out = socket.getOutputStream()
+                                out.write(httpResponse.toByteArray(Charsets.UTF_8))
+                                out.write(htmlBytes)
+                                out.flush()
+
+                                if (!code.isNullOrBlank()) {
+                                    authCodeDeferred.complete(code)
+                                    try {
+                                        server.close()
+                                    } catch (_: Exception) {
+                                    }
+                                } else if (!error.isNullOrBlank()) {
+                                    authCodeDeferred.complete(null)
+                                    try {
+                                        server.close()
+                                    } catch (_: Exception) {
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Ignore individual preconnect/aborted socket errors
+                        }
+                    }
+                }
+            }
+
+            // Open the Google OAuth 2.0 permission screen in the user's browser on the main thread
             withContext(Dispatchers.Main) {
                 val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrlBuilder.toString())).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                context.startActivity(browserIntent)
+                appContext.startActivity(browserIntent)
             }
 
-            var authCode: String? = null
-            while (authCode == null) {
-                val clientSocket = server.accept()
-                clientSocket.use { socket ->
-                    socket.soTimeout = 10_000
-                    val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
-                    val requestLine = reader.readLine() ?: return@use
-                    val pathPart = requestLine.split(" ").getOrNull(1) ?: ""
-
-                    if (pathPart.startsWith("/favicon.ico")) {
-                        val notFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        socket.getOutputStream().write(notFound.toByteArray(Charsets.UTF_8))
-                        return@use
-                    }
-
-                    val query = pathPart.substringAfter('?', "")
-                    val params = parseQueryParams(query)
-                    val code = params["code"]
-                    val error = params["error"]
-
-                    val htmlBody = buildCompletionHtml(success = !code.isNullOrBlank())
-                    val htmlBytes = htmlBody.toByteArray(Charsets.UTF_8)
-                    val httpResponse = buildString {
-                        append("HTTP/1.1 200 OK\r\n")
-                        append("Content-Type: text/html; charset=UTF-8\r\n")
-                        append("Content-Length: ${htmlBytes.size}\r\n")
-                        append("Connection: close\r\n\r\n")
-                    }
-                    val out = socket.getOutputStream()
-                    out.write(httpResponse.toByteArray(Charsets.UTF_8))
-                    out.write(htmlBytes)
-                    out.flush()
-
-                    if (!code.isNullOrBlank()) {
-                        authCode = code
-                    } else if (!error.isNullOrBlank()) {
-                        break
-                    }
-                }
+            val finalCode = withTimeoutOrNull(180_000L) {
+                authCodeDeferred.await()
             }
+            acceptJob.cancel()
 
             // Bring Encrypz MainActivity back to foreground immediately
             withContext(Dispatchers.Main) {
                 try {
-                    val resumeIntent = Intent(context, MainActivity::class.java).apply {
+                    val resumeIntent = Intent(appContext, MainActivity::class.java).apply {
                         addFlags(
                             Intent.FLAG_ACTIVITY_NEW_TASK or
                                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                                 Intent.FLAG_ACTIVITY_CLEAR_TOP
                         )
                     }
-                    context.startActivity(resumeIntent)
+                    appContext.startActivity(resumeIntent)
                 } catch (_: Exception) {
                 }
             }
 
-            val finalCode = authCode ?: return@withContext null
-            val bundle = exchangeCodeForTokens(finalCode) ?: return@withContext null
-            val targetEmail = bundle.email ?: loginHintEmail.orEmpty()
+            if (finalCode.isNullOrBlank()) return@withContext null
+
+            val bundle = exchangeCodeForTokens(finalCode, codeVerifier) ?: return@withContext null
+            val targetEmail = bundle.email
+                ?.takeIf { it.isNotBlank() }
+                ?: fetchEmailFromUserInfo(bundle.accessToken)
+                ?: loginHintEmail.orEmpty()
+
+            val finalBundle = bundle.copy(email = targetEmail.ifBlank { bundle.email })
             if (targetEmail.isNotBlank()) {
-                GoogleAuthConfig.saveGoogleEmail(context, targetEmail)
+                GoogleAuthConfig.saveGoogleEmail(appContext, targetEmail)
             }
-            saveTokenBundle(context, targetEmail, bundle)
-            return@withContext bundle
+            saveTokenBundle(appContext, targetEmail, finalBundle)
+            return@withContext finalBundle
         } catch (_: Exception) {
             return@withContext null
         } finally {
@@ -241,13 +356,14 @@ object LoopbackGoogleOAuthServer {
         }
     }
 
-    private fun exchangeCodeForTokens(code: String): OAuthTokenBundle? {
+    private fun exchangeCodeForTokens(code: String, codeVerifier: String): OAuthTokenBundle? {
         val formBody = buildString {
             append("code=").append(URLEncoder.encode(code, "UTF-8"))
             append("&client_id=").append(URLEncoder.encode(GoogleAuthConfig.CLIENT_ID, "UTF-8"))
             append("&client_secret=").append(URLEncoder.encode(GoogleAuthConfig.CLIENT_SECRET, "UTF-8"))
             append("&redirect_uri=").append(URLEncoder.encode(REDIRECT_URI, "UTF-8"))
             append("&grant_type=authorization_code")
+            append("&code_verifier=").append(URLEncoder.encode(codeVerifier, "UTF-8"))
         }
         return executeTokenPost(formBody, existingRefreshToken = null)
     }
@@ -295,6 +411,25 @@ object LoopbackGoogleOAuthServer {
                 email = email,
                 expiresInSeconds = expiresIn
             )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchEmailFromUserInfo(accessToken: String): String? {
+        return try {
+            val conn = (URL(GOOGLE_USERINFO_ENDPOINT).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("Authorization", "Bearer $accessToken")
+                connectTimeout = 10_000
+                readTimeout = 10_000
+            }
+            val code = conn.responseCode
+            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+            if (code !in 200..299) return null
+            JSONObject(body).optString("email").takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             null
         }

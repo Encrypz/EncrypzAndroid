@@ -107,6 +107,8 @@ enum class UnlockAttemptResult {
 data class VaultUiState(
     val isGoogleConnected: Boolean = false,
     val connectedGoogleEmail: String = "",
+    val isDrivePermissionGranted: Boolean = false,
+    val isRequestingDrivePermission: Boolean = false,
     val oauthClientId: String = GoogleAuthConfig.CLIENT_ID,
     val oauthClientSecretMasked: String = GoogleAuthConfig.maskedClientSecret,
     val isVaultUnlocked: Boolean = false,
@@ -226,7 +228,11 @@ class VaultViewModel : ViewModel() {
         }
     }
 
-    fun connectGoogleAccount(email: String, context: Context? = null) {
+    fun connectGoogleAccount(
+        email: String,
+        context: Context? = null,
+        requestDrivePermissionIfNeeded: Boolean = false
+    ) {
         val cleanEmail = email.trim()
         if (cleanEmail.isEmpty()) return
         val emailKey = cleanEmail.lowercase(Locale.ROOT)
@@ -238,10 +244,22 @@ class VaultViewModel : ViewModel() {
                 userAuthRecords[emailKey] = loaded
             }
         }
+
+        val alreadyAuthorized = if (context != null) {
+            GoogleDriveSyncManager.hasAuthorizedDriveAccess(
+                context = context,
+                accountEmail = cleanEmail,
+                fallbackRefreshTokenFromDb = localRecord?.googleRefreshToken
+            )
+        } else {
+            false
+        }
+
         _uiState.update { state ->
             state.copy(
                 isGoogleConnected = true,
                 connectedGoogleEmail = cleanEmail,
+                isDrivePermissionGranted = alreadyAuthorized,
                 hasExistingVaultAccount = localRecord != null,
                 isCheckingAccountStatus = localRecord == null && context != null,
                 hasCompletedFirstLogin = localRecord?.hasLoggedInOnce == true,
@@ -254,41 +272,125 @@ class VaultViewModel : ViewModel() {
         }
         persistIfPossible(context)
 
-        // Check user's Encrypz account in MongoDB Atlas in background
+        // Check user's Encrypz account in MongoDB Atlas and ensure Google Drive permission & "Encrypz" folder
         if (context != null) {
             viewModelScope.launch(Dispatchers.IO) {
                 val remoteRecord = MongoAtlasClient.findUserVaultRecord(emailKey)
-                if (remoteRecord != null) {
+                val effectiveRecord = if (remoteRecord != null) {
                     userAuthRecords[emailKey] = remoteRecord
                     LocalVaultStorage.saveUserAuthRecord(context, remoteRecord)
-                    _uiState.update { state ->
-                        if (state.connectedGoogleEmail.equals(cleanEmail, ignoreCase = true)) {
-                            state.copy(
-                                hasExistingVaultAccount = true,
-                                isCheckingAccountStatus = false,
-                                hasCompletedFirstLogin = remoteRecord.hasLoggedInOnce,
-                                isPinSet = !remoteRecord.pinVerifierHex.isNullOrBlank()
-                            )
-                        } else {
-                            state
-                        }
-                    }
+                    remoteRecord
                 } else {
-                    _uiState.update { state ->
-                        if (state.connectedGoogleEmail.equals(cleanEmail, ignoreCase = true)) {
-                            val currentLocal = userAuthRecords[emailKey]
-                            state.copy(
-                                hasExistingVaultAccount = currentLocal != null,
-                                isCheckingAccountStatus = false,
-                                hasCompletedFirstLogin = currentLocal?.hasLoggedInOnce == true,
-                                isPinSet = !currentLocal?.pinVerifierHex.isNullOrBlank()
-                            )
-                        } else {
-                            state
-                        }
+                    userAuthRecords[emailKey]
+                }
+
+                val hasDriveAccess = GoogleDriveSyncManager.hasAuthorizedDriveAccess(
+                    context = context,
+                    accountEmail = cleanEmail,
+                    fallbackRefreshTokenFromDb = effectiveRecord?.googleRefreshToken
+                )
+
+                _uiState.update { state ->
+                    if (state.connectedGoogleEmail.equals(cleanEmail, ignoreCase = true)) {
+                        state.copy(
+                            hasExistingVaultAccount = effectiveRecord != null,
+                            isCheckingAccountStatus = false,
+                            hasCompletedFirstLogin = effectiveRecord?.hasLoggedInOnce == true,
+                            isPinSet = !effectiveRecord?.pinVerifierHex.isNullOrBlank(),
+                            isDrivePermissionGranted = hasDriveAccess
+                        )
+                    } else {
+                        state
+                    }
+                }
+
+                if (hasDriveAccess) {
+                    GoogleDriveSyncManager.ensureEncrypzFolderExists(context, cleanEmail, allowInteractiveAuth = false)
+                } else if (requestDrivePermissionIfNeeded) {
+                    requestGoogleDrivePermission(context, cleanEmail)
+                }
+            }
+        }
+    }
+
+    /**
+     * Requests Google Drive permission during Login or Account Creation so the app can create
+     * the `Encrypz` folder in Google Drive and directly save uploaded `.enc` files into it.
+     */
+    fun requestGoogleDrivePermission(
+        context: Context,
+        emailOverride: String? = null,
+        onCompleted: ((Boolean) -> Unit)? = null
+    ) {
+        val targetEmail = (emailOverride ?: _uiState.value.connectedGoogleEmail)
+            .trim()
+            .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
+        val emailKey = targetEmail.lowercase(Locale.ROOT)
+        val existingRecord = if (emailKey.isNotBlank()) {
+            userAuthRecords[emailKey] ?: LocalVaultStorage.loadUserAuthRecord(context, emailKey)
+        } else {
+            null
+        }
+
+        _uiState.update {
+            it.copy(
+                isRequestingDrivePermission = true,
+                statusBannerMessage = "Requesting Google Drive permission for 'Encrypz' folder..."
+            )
+        }
+
+        viewModelScope.launch {
+            val result = GoogleDriveSyncManager.requestDrivePermissionAndEnsureFolder(
+                context = context,
+                accountEmail = targetEmail,
+                fallbackRefreshTokenFromDb = existingRecord?.googleRefreshToken
+            )
+
+            val resolvedEmail = result.email.trim().ifBlank { targetEmail }
+            val resolvedKey = resolvedEmail.lowercase(Locale.ROOT)
+
+            if (result.granted && resolvedKey.isNotBlank()) {
+                val currentRec = userAuthRecords[resolvedKey]
+                    ?: LocalVaultStorage.loadUserAuthRecord(context, resolvedKey)
+                if (currentRec != null) {
+                    val updatedRec = currentRec.copy(
+                        driveFolderId = result.folderId ?: currentRec.driveFolderId,
+                        googleRefreshToken = result.refreshToken ?: currentRec.googleRefreshToken,
+                        updatedAt = currentFormattedDate()
+                    )
+                    userAuthRecords[resolvedKey] = updatedRec
+                    LocalVaultStorage.saveUserAuthRecord(context, updatedRec)
+                    viewModelScope.launch(Dispatchers.IO) {
+                        MongoAtlasClient.upsertUserVaultRecord(updatedRec)
                     }
                 }
             }
+
+            _uiState.update { state ->
+                state.copy(
+                    isGoogleConnected = state.isGoogleConnected || resolvedEmail.isNotBlank(),
+                    connectedGoogleEmail = resolvedEmail.ifBlank { state.connectedGoogleEmail },
+                    isDrivePermissionGranted = result.granted,
+                    isRequestingDrivePermission = false,
+                    statusBannerMessage = if (result.granted) {
+                        "Google Drive '${GoogleDriveSyncManager.VAULT_DRIVE_FOLDER_NAME}' folder permission granted"
+                    } else {
+                        "Google Drive permission is required to save files directly to '${GoogleDriveSyncManager.VAULT_DRIVE_FOLDER_NAME}'"
+                    }
+                )
+            }
+
+            if (result.granted && _uiState.value.isVaultUnlocked) {
+                // Directly upload any unsynced local encrypted files to the Encrypz folder on Google Drive
+                val unsynced = _uiState.value.files.filter {
+                    !it.isDeleted && it.driveSyncState != DriveSyncState.SYNCED_TO_DRIVE
+                }
+                for (file in unsynced) {
+                    saveFileToGoogleDrive(context, file.id, forceDocumentSaver = false)
+                }
+            }
+
+            onCompleted?.invoke(result.granted)
         }
     }
 
@@ -297,6 +399,8 @@ class VaultViewModel : ViewModel() {
             it.copy(
                 isGoogleConnected = false,
                 connectedGoogleEmail = "",
+                isDrivePermissionGranted = false,
+                isRequestingDrivePermission = false,
                 isVaultUnlocked = false,
                 hasExistingVaultAccount = false,
                 isCheckingAccountStatus = false,
@@ -416,9 +520,20 @@ class VaultViewModel : ViewModel() {
         }
 
         val pinAlreadyConfigured = !activeRecord.pinVerifierHex.isNullOrBlank()
+        val hasDriveAccess = if (context != null && rawEmail.isNotBlank()) {
+            GoogleDriveSyncManager.hasAuthorizedDriveAccess(
+                context = context,
+                accountEmail = rawEmail,
+                fallbackRefreshTokenFromDb = activeRecord.googleRefreshToken
+            )
+        } else {
+            _uiState.value.isDrivePermissionGranted
+        }
+
         _uiState.update {
             it.copy(
                 isGoogleConnected = true,
+                isDrivePermissionGranted = hasDriveAccess,
                 isVaultUnlocked = true,
                 hasExistingVaultAccount = true,
                 isCheckingAccountStatus = false,
@@ -429,13 +544,21 @@ class VaultViewModel : ViewModel() {
             )
         }
 
-        // Automatically ensure the "Encrypz" folder exists in Google Drive (creates it if missing)
+        // Request Google Drive permission if not yet granted, and ensure the "Encrypz" folder exists in Google Drive
         if (context != null) {
             val driveEmail = _uiState.value.connectedGoogleEmail
                 .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
             if (driveEmail.isNotBlank()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    GoogleDriveSyncManager.ensureEncrypzFolderExists(context, driveEmail)
+                if (hasDriveAccess) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        GoogleDriveSyncManager.ensureEncrypzFolderExists(
+                            context = context,
+                            accountEmail = driveEmail,
+                            allowInteractiveAuth = false
+                        )
+                    }
+                } else {
+                    requestGoogleDrivePermission(context, driveEmail)
                 }
             }
         }
@@ -564,9 +687,22 @@ class VaultViewModel : ViewModel() {
             return false
         }
 
+        val driveEmailForPin = _uiState.value.connectedGoogleEmail
+            .ifBlank { context?.let { GoogleAuthConfig.getSavedGoogleEmail(it) }.orEmpty() }
+        val hasDriveAccess = if (context != null && driveEmailForPin.isNotBlank()) {
+            GoogleDriveSyncManager.hasAuthorizedDriveAccess(
+                context = context,
+                accountEmail = driveEmailForPin,
+                fallbackRefreshTokenFromDb = existingRecord.googleRefreshToken
+            )
+        } else {
+            _uiState.value.isDrivePermissionGranted
+        }
+
         _uiState.update {
             it.copy(
                 isGoogleConnected = true,
+                isDrivePermissionGranted = hasDriveAccess,
                 isVaultUnlocked = true,
                 hasExistingVaultAccount = true,
                 hasCompletedFirstLogin = true,
@@ -576,13 +712,17 @@ class VaultViewModel : ViewModel() {
             )
         }
 
-        if (context != null) {
-            val driveEmail = _uiState.value.connectedGoogleEmail
-                .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
-            if (driveEmail.isNotBlank()) {
+        if (context != null && driveEmailForPin.isNotBlank()) {
+            if (hasDriveAccess) {
                 viewModelScope.launch(Dispatchers.IO) {
-                    GoogleDriveSyncManager.ensureEncrypzFolderExists(context, driveEmail)
+                    GoogleDriveSyncManager.ensureEncrypzFolderExists(
+                        context = context,
+                        accountEmail = driveEmailForPin,
+                        allowInteractiveAuth = false
+                    )
                 }
+            } else {
+                requestGoogleDrivePermission(context, driveEmailForPin)
             }
         }
         return true
@@ -709,8 +849,8 @@ class VaultViewModel : ViewModel() {
 
     /**
      * Encrypts the file client-side with AES-256-GCM (or imports an already-encrypted .enc file),
-     * saves the encrypted .enc blob to local storage, and uploads the encrypted .enc file to
-     * the user's Google Drive.
+     * saves the encrypted .enc blob to local storage, and directly uploads the encrypted .enc file
+     * into the `Encrypz` folder on the user's Google Drive.
      */
     fun encryptAndAddFile(
         fileName: String,
@@ -786,7 +926,7 @@ class VaultViewModel : ViewModel() {
                 statusBannerMessage = if (wasImportedFromEnc) {
                     "Imported & decrypted \"$safeName\" from Google Drive (AES-256-GCM)"
                 } else if (context != null && autoSaveToGoogleDrive) {
-                    "Encrypted \"$safeName\" (AES-256-GCM) — saving .enc to Google Drive..."
+                    "Encrypted \"$safeName\" (AES-256-GCM) — directly saving to Google Drive 'Encrypz' folder..."
                 } else {
                     "Encrypted & uploaded \"$safeName\" (AES-256-GCM)"
                 }
@@ -794,7 +934,7 @@ class VaultViewModel : ViewModel() {
         }
         persistIfPossible(context)
 
-        // Automatically upload the AES-256-GCM encrypted .enc file to Google Drive
+        // Directly upload the AES-256-GCM encrypted .enc file into the "Encrypz" folder on Google Drive
         if (context != null && autoSaveToGoogleDrive && !wasImportedFromEnc) {
             saveFileToGoogleDrive(
                 context = context,
@@ -821,9 +961,8 @@ class VaultViewModel : ViewModel() {
     }
 
     /**
-     * Uploads or saves a specific AES-256-GCM encrypted .enc file from the vault into the user's
-     * Google Drive. Tries direct Google Drive API v3 upload ("Encrypz Vault" folder) first, and
-     * automatically falls back to Android's Google Drive Document Saver if OAuth client requires it.
+     * Directly uploads a specific AES-256-GCM encrypted .enc file from the vault into the `Encrypz`
+     * folder on the user's Google Drive via the Google Drive API v3.
      */
     fun saveFileToGoogleDrive(
         context: Context,
@@ -833,17 +972,6 @@ class VaultViewModel : ViewModel() {
         val targetFile = _uiState.value.files.find { it.id == fileId } ?: return
         val accountEmail = _uiState.value.connectedGoogleEmail
             .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
-
-        if (forceDocumentSaver) {
-            _uiState.update { state ->
-                state.copy(
-                    pendingDriveSaverFileId = targetFile.id,
-                    pendingDriveSaverFileName = targetFile.name,
-                    statusBannerMessage = "Select 'Save' in Google Drive to store encrypted \"${targetFile.name}\""
-                )
-            }
-            return
-        }
 
         _uiState.update { state ->
             state.copy(
@@ -858,6 +986,7 @@ class VaultViewModel : ViewModel() {
                 is GoogleDriveSyncManager.DriveUploadResult.UploadedToDriveApi -> {
                     _uiState.update { state ->
                         state.copy(
+                            isDrivePermissionGranted = true,
                             files = state.files.map {
                                 if (it.id == fileId) {
                                     it.copy(
@@ -868,7 +997,7 @@ class VaultViewModel : ViewModel() {
                                     it
                                 }
                             },
-                            statusBannerMessage = "Saved encrypted \"${targetFile.name}\" to Google Drive (${result.folderName})"
+                            statusBannerMessage = "Saved encrypted \"${targetFile.name}\" directly to Google Drive (${result.folderName})"
                         )
                     }
                     persistIfPossible(context)
@@ -879,19 +1008,21 @@ class VaultViewModel : ViewModel() {
                         state.copy(
                             pendingDriveConsentIntent = result.consentIntent,
                             pendingDriveConsentFileId = result.fileId,
-                            statusBannerMessage = "Grant Google Drive access to save encrypted \"${targetFile.name}\""
+                            statusBannerMessage = "Grant Google Drive access to save encrypted \"${targetFile.name}\" to 'Encrypz'"
                         )
                     }
                 }
 
-                is GoogleDriveSyncManager.DriveUploadResult.FallbackToDriveSaver -> {
+                is GoogleDriveSyncManager.DriveUploadResult.UploadFailed -> {
                     _uiState.update { state ->
                         state.copy(
-                            pendingDriveSaverFileId = result.fileId,
-                            pendingDriveSaverFileName = result.encryptedFileName,
-                            statusBannerMessage = "Confirm 'Save' in Google Drive to store encrypted \"${result.encryptedFileName}\""
+                            files = state.files.map {
+                                if (it.id == fileId) it.copy(driveSyncState = DriveSyncState.LOCAL_ENCRYPTED) else it
+                            },
+                            statusBannerMessage = "Could not upload \"${result.encryptedFileName}\" to Google Drive 'Encrypz' folder: ${result.reason}"
                         )
                     }
+                    persistIfPossible(context)
                 }
             }
         }
@@ -912,11 +1043,16 @@ class VaultViewModel : ViewModel() {
             if (granted) {
                 saveFileToGoogleDrive(context, pendingFileId, forceDocumentSaver = false)
             } else {
-                // Fall back to Android Google Drive Document Saver so the encrypted .enc file is still saved to Drive
-                saveFileToGoogleDrive(context, pendingFileId, forceDocumentSaver = true)
+                requestGoogleDrivePermission(context) { authorized ->
+                    if (authorized) {
+                        saveFileToGoogleDrive(context, pendingFileId, forceDocumentSaver = false)
+                    }
+                }
             }
         } else if (granted) {
             syncVaultWithGoogleDrive(context)
+        } else {
+            requestGoogleDrivePermission(context)
         }
     }
 

@@ -49,12 +49,19 @@ object GoogleDriveSyncManager {
             val fileId: String
         ) : DriveUploadResult()
 
-        data class FallbackToDriveSaver(
+        data class UploadFailed(
             val fileId: String,
             val encryptedFileName: String,
             val reason: String
         ) : DriveUploadResult()
     }
+
+    data class DrivePermissionResult(
+        val granted: Boolean,
+        val email: String,
+        val folderId: String? = null,
+        val refreshToken: String? = null
+    )
 
     data class RemoteDriveEncryptedFile(
         val driveFileId: String,
@@ -73,9 +80,93 @@ object GoogleDriveSyncManager {
     }
 
     /**
+     * Checks whether the account already has a cached or refreshable Google Drive OAuth token.
+     */
+    fun hasAuthorizedDriveAccess(
+        context: Context,
+        accountEmail: String,
+        fallbackRefreshTokenFromDb: String? = null
+    ): Boolean {
+        val cleanEmail = accountEmail.trim()
+        if (cleanEmail.isBlank() || !cleanEmail.contains("@")) return false
+        return LoopbackGoogleOAuthServer.hasCachedOrRefreshToken(
+            context = context,
+            email = cleanEmail,
+            fallbackRefreshTokenFromDb = fallbackRefreshTokenFromDb
+        )
+    }
+
+    /**
+     * Requests Google Drive permission during Login or Account Creation (if not already granted)
+     * and immediately ensures the `Encrypz` folder exists in the user's Google Drive.
+     */
+    suspend fun requestDrivePermissionAndEnsureFolder(
+        context: Context,
+        accountEmail: String,
+        fallbackRefreshTokenFromDb: String? = null
+    ): DrivePermissionResult = withContext(Dispatchers.IO) {
+        val cleanEmail = accountEmail.trim()
+        val cachedOrRefreshed = if (cleanEmail.isNotBlank()) {
+            LoopbackGoogleOAuthServer.getValidAccessTokenOrRefresh(
+                context = context,
+                email = cleanEmail,
+                fallbackRefreshTokenFromDb = fallbackRefreshTokenFromDb
+            )
+        } else {
+            null
+        }
+
+        if (!cachedOrRefreshed.isNullOrBlank() && cleanEmail.isNotBlank()) {
+            val folderId = try {
+                findOrCreateEncrypzVaultFolder(context, cleanEmail, cachedOrRefreshed)
+            } catch (_: Exception) {
+                LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
+                null
+            }
+            if (!folderId.isNullOrBlank()) {
+                return@withContext DrivePermissionResult(
+                    granted = true,
+                    email = cleanEmail,
+                    folderId = folderId,
+                    refreshToken = LoopbackGoogleOAuthServer.getSavedRefreshToken(context, cleanEmail)
+                )
+            }
+        }
+
+        // Launch OAuth 2.0 flow to obtain Google Drive permission for creating/saving to the "Encrypz" folder
+        val bundle = LoopbackGoogleOAuthServer.authorizeViaLoopbackBrowser(
+            context = context,
+            loginHintEmail = cleanEmail.takeIf { it.contains("@") }
+        )
+        if (bundle != null && bundle.accessToken.isNotBlank()) {
+            val resolvedEmail = bundle.email?.takeIf { it.isNotBlank() } ?: cleanEmail
+            val folderId = try {
+                if (resolvedEmail.isNotBlank()) {
+                    findOrCreateEncrypzVaultFolder(context, resolvedEmail, bundle.accessToken)
+                } else {
+                    null
+                }
+            } catch (_: Exception) {
+                null
+            }
+            return@withContext DrivePermissionResult(
+                granted = true,
+                email = resolvedEmail,
+                folderId = folderId,
+                refreshToken = bundle.refreshToken ?: LoopbackGoogleOAuthServer.getSavedRefreshToken(context, resolvedEmail)
+            )
+        }
+
+        return@withContext DrivePermissionResult(
+            granted = false,
+            email = cleanEmail
+        )
+    }
+
+    /**
      * Resolves a valid Google Drive OAuth 2.0 access token for [cleanEmail]:
      * 1. Cached or refreshed OAuth token from [LoopbackGoogleOAuthServer] / MongoDB refresh token.
-     * 2. Native Android [GoogleAuthUtil.getToken] for `drive.file`.
+     * 2. Native Android [GoogleAuthUtil.getToken] if already granted without requiring GMS consent.
      * 3. Loopback OAuth 2.0 flow (`http://localhost:5207/api/Auth/google-callback`) using
      *    [GoogleAuthConfig.CLIENT_ID] and [GoogleAuthConfig.CLIENT_SECRET].
      */
@@ -99,7 +190,7 @@ object GoogleDriveSyncManager {
             return@withContext TokenResolution.Token(cachedOrRefreshed)
         }
 
-        // 2. Try Google Play Services GoogleAuthUtil.getToken
+        // 2. Try Google Play Services GoogleAuthUtil.getToken if already authorized
         var recoverableIntent: Intent? = null
         try {
             val scope = "oauth2:${GoogleAuthConfig.SCOPE_DRIVE_FILE}"
@@ -110,18 +201,13 @@ object GoogleDriveSyncManager {
         } catch (recoverable: UserRecoverableAuthException) {
             recoverableIntent = recoverable.intent
         } catch (_: GoogleAuthException) {
-            // Will try Web OAuth Loopback flow below
+            // Will use Web OAuth Loopback flow below
         } catch (_: Exception) {
-            // Will try Web OAuth Loopback flow below
+            // Will use Web OAuth Loopback flow below
         }
 
-        // 3. If Google Play Services requires user consent intent, return it first
-        if (recoverableIntent != null) {
-            return@withContext TokenResolution.ConsentRequired(recoverableIntent)
-        }
-
-        // 4. Use the configured Web OAuth Client ID & Secret via Loopback OAuth flow
-        if (allowInteractiveLoopback) {
+        // 3. Use the configured Web OAuth Client ID & Secret via Loopback OAuth flow
+        if (allowInteractiveLoopback && GoogleAuthConfig.CLIENT_ID.isNotBlank() && GoogleAuthConfig.CLIENT_SECRET.isNotBlank()) {
             val bundle = LoopbackGoogleOAuthServer.authorizeViaLoopbackBrowser(
                 context = context,
                 loginHintEmail = cleanEmail
@@ -131,7 +217,12 @@ object GoogleDriveSyncManager {
             }
         }
 
-        return@withContext TokenResolution.Failed("Google Drive authorization required")
+        // 4. Fallback to GMS recoverable intent only if Web OAuth is not configured
+        if (recoverableIntent != null && GoogleAuthConfig.CLIENT_ID.isBlank()) {
+            return@withContext TokenResolution.ConsentRequired(recoverableIntent)
+        }
+
+        return@withContext TokenResolution.Failed("Google Drive permission is required to save files to the 'Encrypz' folder")
     }
 
     private sealed class TokenResolution {
@@ -166,7 +257,7 @@ object GoogleDriveSyncManager {
 
     /**
      * Ensures the `Encrypz` folder exists in the user's Google Drive (creating it if it does not exist)
-     * and uploads the AES-256-GCM encrypted [VaultFileEntry] (`.enc` payload) inside the `Encrypz` folder.
+     * and directly uploads the AES-256-GCM encrypted [VaultFileEntry] (`.enc` payload) inside the `Encrypz` folder.
      */
     suspend fun uploadEncryptedFileToDrive(
         context: Context,
@@ -177,14 +268,14 @@ object GoogleDriveSyncManager {
         val safeEncryptedName = if (file.name.endsWith(".enc")) file.name else "${file.name}.enc"
 
         if (cleanEmail.isBlank() || !cleanEmail.contains("@")) {
-            return@withContext DriveUploadResult.FallbackToDriveSaver(
+            return@withContext DriveUploadResult.UploadFailed(
                 fileId = file.id,
                 encryptedFileName = safeEncryptedName,
                 reason = "No Google account email active"
             )
         }
 
-        val token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = true)) {
+        var token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = true)) {
             is TokenResolution.Token -> res.accessToken
             is TokenResolution.ConsentRequired -> {
                 return@withContext DriveUploadResult.NeedsUserConsent(
@@ -193,7 +284,7 @@ object GoogleDriveSyncManager {
                 )
             }
             is TokenResolution.Failed -> {
-                return@withContext DriveUploadResult.FallbackToDriveSaver(
+                return@withContext DriveUploadResult.UploadFailed(
                     fileId = file.id,
                     encryptedFileName = safeEncryptedName,
                     reason = res.reason
@@ -213,37 +304,76 @@ object GoogleDriveSyncManager {
                 existingDriveId = file.driveFileId?.takeIf { !it.startsWith("content://") }
             )
 
-            // Record the encrypted file metadata in MongoDB Atlas (encrypz.vault_files)
-            try {
-                MongoAtlasClient.upsertEncryptedFileMetadata(
-                    fileId = file.id,
-                    email = cleanEmail,
-                    encryptedFileName = safeEncryptedName,
-                    driveFileId = uploadedDriveId,
-                    driveFolderName = VAULT_DRIVE_FOLDER_NAME,
-                    ivHex = file.ivHex,
-                    sizeBytes = file.sizeBytes,
-                    uploadedAt = file.uploadedAt,
-                    isDeleted = file.isDeleted
-                )
-            } catch (_: Exception) {
-            }
+            recordEncryptedFileInMongo(file, cleanEmail, safeEncryptedName, uploadedDriveId)
 
             DriveUploadResult.UploadedToDriveApi(
                 driveFileId = uploadedDriveId,
                 folderId = folderId,
                 folderName = VAULT_DRIVE_FOLDER_NAME
             )
-        } catch (ex: Exception) {
+        } catch (firstEx: Exception) {
+            // Clear expired/stale access token and retry once with a freshly refreshed/resolved token
             try {
                 GoogleAuthUtil.clearToken(context, token)
             } catch (_: Exception) {
             }
-            DriveUploadResult.FallbackToDriveSaver(
+            LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
+
+            val retryRes = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = true)
+            if (retryRes is TokenResolution.Token) {
+                token = retryRes.accessToken
+                try {
+                    val folderId = findOrCreateEncrypzVaultFolder(context, cleanEmail, token)
+                    val uploadedDriveId = uploadMultipartEncryptedBlob(
+                        accessToken = token,
+                        folderId = folderId,
+                        encryptedFileName = safeEncryptedName,
+                        encryptedPayload = file.encryptedPayload,
+                        ivHex = file.ivHex,
+                        existingDriveId = file.driveFileId?.takeIf { !it.startsWith("content://") }
+                    )
+                    recordEncryptedFileInMongo(file, cleanEmail, safeEncryptedName, uploadedDriveId)
+                    return@withContext DriveUploadResult.UploadedToDriveApi(
+                        driveFileId = uploadedDriveId,
+                        folderId = folderId,
+                        folderName = VAULT_DRIVE_FOLDER_NAME
+                    )
+                } catch (retryEx: Exception) {
+                    return@withContext DriveUploadResult.UploadFailed(
+                        fileId = file.id,
+                        encryptedFileName = safeEncryptedName,
+                        reason = retryEx.message ?: "Direct Drive API upload failed"
+                    )
+                }
+            }
+
+            DriveUploadResult.UploadFailed(
                 fileId = file.id,
                 encryptedFileName = safeEncryptedName,
-                reason = ex.message ?: "Direct Drive API upload failed"
+                reason = firstEx.message ?: "Direct Drive API upload failed"
             )
+        }
+    }
+
+    private fun recordEncryptedFileInMongo(
+        file: VaultFileEntry,
+        cleanEmail: String,
+        safeEncryptedName: String,
+        uploadedDriveId: String
+    ) {
+        try {
+            MongoAtlasClient.upsertEncryptedFileMetadata(
+                fileId = file.id,
+                email = cleanEmail,
+                encryptedFileName = safeEncryptedName,
+                driveFileId = uploadedDriveId,
+                driveFolderName = VAULT_DRIVE_FOLDER_NAME,
+                ivHex = file.ivHex,
+                sizeBytes = file.sizeBytes,
+                uploadedAt = file.uploadedAt,
+                isDeleted = file.isDeleted
+            )
+        } catch (_: Exception) {
         }
     }
 

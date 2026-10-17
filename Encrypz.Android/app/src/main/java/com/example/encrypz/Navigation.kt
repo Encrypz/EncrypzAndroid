@@ -51,16 +51,25 @@ fun MainNavigation(
                 LoginScreen(
                     initialGoogleSignedIn = vaultState.isGoogleConnected,
                     connectedAccountEmail = vaultState.connectedGoogleEmail,
+                    isDrivePermissionGranted = vaultState.isDrivePermissionGranted,
+                    isRequestingDrivePermission = vaultState.isRequestingDrivePermission,
                     hasExistingVaultAccount = vaultState.hasExistingVaultAccount,
                     isCheckingAccountStatus = vaultState.isCheckingAccountStatus,
                     hasCompletedFirstLogin = vaultState.hasCompletedFirstLogin,
                     isPinSet = vaultState.isPinSet,
                     onGoogleSignInChanged = { signedIn, email ->
                         if (signedIn) {
-                            vaultViewModel.connectGoogleAccount(email ?: vaultState.connectedGoogleEmail, context)
+                            vaultViewModel.connectGoogleAccount(
+                                email = email ?: vaultState.connectedGoogleEmail,
+                                context = context,
+                                requestDrivePermissionIfNeeded = true
+                            )
                         } else {
                             vaultViewModel.disconnectGoogleAccount()
                         }
+                    },
+                    onRequestDrivePermission = {
+                        vaultViewModel.requestGoogleDrivePermission(context)
                     },
                     onUnlockWithPassword = { password, isCreatingVault ->
                         vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)

@@ -127,6 +127,8 @@ fun LoginScreen(
     modifier: Modifier = Modifier,
     initialGoogleSignedIn: Boolean = false,
     connectedAccountEmail: String = "",
+    isDrivePermissionGranted: Boolean = false,
+    isRequestingDrivePermission: Boolean = false,
     hasExistingVaultAccount: Boolean = false,
     isCheckingAccountStatus: Boolean = false,
     hasCompletedFirstLogin: Boolean = false,
@@ -134,6 +136,7 @@ fun LoginScreen(
     onUnlockWithPassword: ((String, Boolean) -> UnlockAttemptResult)? = null,
     onUnlockWithPin: ((String) -> Boolean)? = null,
     onSetupPinAfterFirstLogin: ((String) -> Boolean)? = null,
+    onRequestDrivePermission: (() -> Unit)? = null,
     onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -155,6 +158,14 @@ fun LoginScreen(
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var activeInfoDialog by rememberSaveable { mutableStateOf<AuthInfoDialog?>(null) }
+
+    // Keep activeEmail in sync if OAuth resolved/updated the email
+    LaunchedEffect(connectedAccountEmail) {
+        if (connectedAccountEmail.isNotBlank() && connectedAccountEmail != activeEmail) {
+            activeEmail = connectedAccountEmail
+            isGoogleSignedIn = true
+        }
+    }
 
     // Restore previously selected Google account from SharedPreferences if present
     LaunchedEffect(Unit) {
@@ -187,6 +198,7 @@ fun LoginScreen(
     }
 
     // Native Android Google Account Picker launcher — returns the exact email selected by the user
+    // and immediately requests Google Drive permission for the "Encrypz" folder
     val googleAccountChooserLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -644,8 +656,8 @@ fun LoginScreen(
                                     try {
                                         val chooserIntent = GoogleAuthConfig.createGoogleAccountChooserIntent()
                                         googleAccountChooserLauncher.launch(chooserIntent)
-                                    } catch (e: Exception) {
-                                        errorMessage = "Unable to launch Google Account Chooser: ${e.localizedMessage ?: "Please add a Google account on this device."}"
+                                    } catch (_: Exception) {
+                                        onRequestDrivePermission?.invoke()
                                     }
                                 },
                                 modifier = Modifier
@@ -758,7 +770,69 @@ fun LoginScreen(
                                 }
                             }
 
-                            Spacer(Modifier.height(18.dp))
+                            Spacer(Modifier.height(10.dp))
+
+                            // Google Drive "Encrypz" Folder Permission status & action row
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !isDrivePermissionGranted && !isRequestingDrivePermission) {
+                                        onRequestDrivePermission?.invoke()
+                                    },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isDrivePermissionGranted) {
+                                    EncrypzSuccessBg.copy(alpha = 0.7f)
+                                } else {
+                                    EncrypzBlue.copy(alpha = 0.14f)
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isDrivePermissionGranted) EncrypzSuccessBorder else EncrypzBorderGlow
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isDrivePermissionGranted) Icons.Default.CheckCircle else Icons.Default.Info,
+                                            contentDescription = null,
+                                            tint = if (isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzBlueBright,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = when {
+                                                isDrivePermissionGranted -> "Google Drive 'Encrypz' folder permission granted"
+                                                isRequestingDrivePermission -> "Requesting Google Drive 'Encrypz' folder permission..."
+                                                else -> "Google Drive 'Encrypz' folder permission required"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzText
+                                        )
+                                    }
+                                    if (!isDrivePermissionGranted && !isRequestingDrivePermission) {
+                                        Text(
+                                            text = "Grant",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.SemiBold,
+                                                textDecoration = TextDecoration.Underline
+                                            ),
+                                            color = EncrypzBlueBright,
+                                            modifier = Modifier.padding(start = 8.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(16.dp))
 
                             if (!isCreatingVault && usePinMode && hasCompletedFirstLogin && isPinSet) {
                                 // UNLOCK WITH PIN UI (Available after first login)
