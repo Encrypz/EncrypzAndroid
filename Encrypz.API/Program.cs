@@ -43,6 +43,8 @@ public class Program
                     PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0
                 }));
         });
+        builder.Services.AddHttpClient<MobileGoogleIdentity>();
+        builder.Services.AddSingleton<IMobileAccountStore, MobileAccountStore>();
         builder.Services.AddControllers();
         // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
         builder.Services.AddEndpointsApiExplorer();
@@ -83,6 +85,7 @@ public class Program
         app.Use(async (context, next) =>
         {
             if (context.Request.Path.StartsWithSegments("/api") &&
+                !context.Request.Path.StartsWithSegments("/api/mobile/accounts") &&
                 !HttpMethods.IsGet(context.Request.Method) &&
                 !HttpMethods.IsHead(context.Request.Method) &&
                 !HttpMethods.IsOptions(context.Request.Method))

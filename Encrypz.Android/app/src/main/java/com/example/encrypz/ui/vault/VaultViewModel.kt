@@ -10,7 +10,7 @@ import com.example.encrypz.auth.GoogleAuthConfig
 import com.example.encrypz.crypto.VaultFileNames
 import com.example.encrypz.crypto.VaultCrypto
 import com.example.encrypz.data.LocalVaultStorage
-import com.example.encrypz.data.MongoAtlasClient
+import com.example.encrypz.data.AccountApiClient
 import com.example.encrypz.data.MongoAtlasClient.MongoVaultUserRecord
 import com.example.encrypz.drive.GoogleDriveSyncManager
 import kotlinx.coroutines.Dispatchers
@@ -99,6 +99,7 @@ data class VaultFileEntry(
 }
 
 enum class UnlockAttemptResult {
+    SERVICE_ERROR,
     SUCCESS,
     WRONG_PASSWORD,
     WRONG_PIN,
@@ -189,13 +190,13 @@ class VaultViewModel : ViewModel() {
      */
     fun ensureLocalStorageLoaded(context: Context) {
         if (isStorageLoaded) return
-        isStorageLoaded = true
 
         val keyBundle = LocalVaultStorage.loadOrCreateKeyBundle(context)
         activeVaultKey = keyBundle.vaultKey
         salt = keyBundle.salt
         wrappedVaultKey = VaultCrypto.encryptPayload(activeVaultKey.encoded, activeVaultKey)
 
+        isStorageLoaded = true
         val persisted = LocalVaultStorage.loadVaultData(context)
         if (persisted != null) {
             _uiState.update { state ->
@@ -247,6 +248,10 @@ class VaultViewModel : ViewModel() {
         val emailKey = cleanEmail.lowercase(Locale.ROOT)
         var localRecord: MongoVaultUserRecord? = userAuthRecords[emailKey]
         if (context != null) {
+            if (LocalVaultStorage.selectAccount(context, emailKey)) {
+                isStorageLoaded = false
+                _uiState.update { it.copy(isVaultUnlocked = false, files = emptyList(), folders = emptyList()) }
+            }
             ensureLocalStorageLoaded(context)
             LocalVaultStorage.loadUserAuthRecord(context, emailKey)?.let { loaded ->
                 localRecord = loaded
@@ -264,9 +269,7 @@ class VaultViewModel : ViewModel() {
                 isCheckingAccountStatus = localRecord == null && context != null,
                 hasCompletedFirstLogin = localRecord?.hasLoggedInOnce == true,
                 isPinSet = !localRecord?.pinVerifierHex.isNullOrBlank(),
-                files = state.files.map { file ->
-                    file.copy(googleAccountEmail = cleanEmail)
-                },
+
                 statusBannerMessage = "Connected to Google Drive ($cleanEmail)"
             )
         }
@@ -277,31 +280,16 @@ class VaultViewModel : ViewModel() {
             requestGoogleDrivePermission(context, cleanEmail)
         }
 
-        // Check user's Encrypz account in MongoDB Atlas.
         if (context != null) {
             viewModelScope.launch(Dispatchers.IO) {
-                val remoteRecord = MongoAtlasClient.findUserVaultRecord(emailKey)
-                val effectiveRecord = if (remoteRecord != null) {
-                    userAuthRecords[emailKey] = remoteRecord
-                    LocalVaultStorage.saveUserAuthRecord(context, remoteRecord)
-                    remoteRecord
-                } else {
-                    userAuthRecords[emailKey]
-                }
-
+                val result = runCatching { AccountApiClient.exists(context, emailKey) }
                 _uiState.update { state ->
-                    if (state.connectedGoogleEmail.equals(cleanEmail, ignoreCase = true)) {
-                        state.copy(
-                            hasExistingVaultAccount = effectiveRecord != null,
-                            isCheckingAccountStatus = false,
-                            hasCompletedFirstLogin = effectiveRecord?.hasLoggedInOnce == true,
-                            isPinSet = !effectiveRecord?.pinVerifierHex.isNullOrBlank()
-                        )
-                    } else {
-                        state
-                    }
+                    if (!state.connectedGoogleEmail.equals(cleanEmail, true)) state else state.copy(
+                        hasExistingVaultAccount = result.getOrNull() ?: true,
+                        isCheckingAccountStatus = false,
+                        statusBannerMessage = result.exceptionOrNull()?.message ?: state.statusBannerMessage
+                    )
                 }
-
             }
         }
     }
@@ -378,9 +366,6 @@ class VaultViewModel : ViewModel() {
                     )
                     userAuthRecords[resolvedKey] = updatedRec
                     LocalVaultStorage.saveUserAuthRecord(context, updatedRec)
-                    viewModelScope.launch(Dispatchers.IO) {
-                        MongoAtlasClient.upsertUserVaultRecord(updatedRec)
-                    }
                 }
             }
 
@@ -482,89 +467,47 @@ class VaultViewModel : ViewModel() {
         val rawEmail = _uiState.value.connectedGoogleEmail.trim()
         val emailKey = rawEmail.lowercase(Locale.ROOT).ifBlank { "default_vault_user" }
 
-        // Load existing auth record from memory, LocalVaultStorage, or MongoDB Atlas
-        var existingRecord: MongoVaultUserRecord? = userAuthRecords[emailKey]
-        if (existingRecord == null && context != null) {
-            existingRecord = LocalVaultStorage.loadUserAuthRecord(context, emailKey)
-            if (existingRecord != null) {
-                userAuthRecords[emailKey] = existingRecord
-            }
-        }
-        if (existingRecord == null && context != null) {
-            existingRecord = runBlocking(Dispatchers.IO) {
-                withTimeoutOrNull(3500L) {
-                    MongoAtlasClient.findUserVaultRecord(emailKey)
-                }
-            }
-            if (existingRecord != null) {
-                userAuthRecords[emailKey] = existingRecord
-                LocalVaultStorage.saveUserAuthRecord(context, existingRecord)
-            }
-        }
-
-        // If user tried to log in with a Google email that has NOT created an Encrypz account yet,
-        // direct them to Account Creation instead of logging in!
-        if (!isCreatingNewVault && existingRecord == null && rawEmail.isNotBlank()) {
-            _uiState.update {
-                it.copy(
-                    isVaultUnlocked = false,
-                    hasExistingVaultAccount = false,
-                    isCheckingAccountStatus = false,
-                    statusBannerMessage = "No Encrypz account found for $rawEmail. Please create your vault."
-                )
-            }
-            return UnlockAttemptResult.ACCOUNT_NOT_CREATED
-        }
-
+        val existingRecord = userAuthRecords[emailKey]
+            ?: context?.let { LocalVaultStorage.loadUserAuthRecord(it, emailKey) }
         val activeRecord: MongoVaultUserRecord
-        if (!isCreatingNewVault && existingRecord != null) {
-            val recordSalt = VaultCrypto.fromHex(existingRecord.passwordSaltHex).takeIf { it.isNotEmpty() } ?: salt
-            val candidateVerifier = VaultCrypto.computePasswordVerifierHex(password, recordSalt)
-            if (!candidateVerifier.equals(existingRecord.passwordVerifierHex, ignoreCase = true)) {
-                _uiState.update {
-                    it.copy(
-                        isVaultUnlocked = false,
-                        statusBannerMessage = "Wrong master password. Please enter the correct master password."
-                    )
-                }
-                return UnlockAttemptResult.WRONG_PASSWORD
+        try {
+            if (context != null) {
+                activeRecord = AccountApiClient.authenticate(context, emailKey, password,
+                    isCreatingNewVault, activeVaultKey, existingRecord)
+            } else {
+                // In-memory preview/test accounts never contact a real database.
+                if (!isCreatingNewVault && existingRecord == null) return UnlockAttemptResult.ACCOUNT_NOT_CREATED
+                if (isCreatingNewVault && existingRecord != null) return UnlockAttemptResult.SERVICE_ERROR
+                val recordSalt = existingRecord?.let { VaultCrypto.fromHex(it.passwordSaltHex) } ?: salt
+                val wrapping = VaultCrypto.deriveWrappingKey(password, recordSalt)
+                activeRecord = existingRecord ?: MongoVaultUserRecord(emailKey, VaultCrypto.toHex(recordSalt),
+                    VaultCrypto.accountProof(wrapping), VaultCrypto.toHex(VaultCrypto.encryptVaultKey(activeVaultKey, wrapping)),
+                    credentialVersion = 2)
             }
+            val recordSalt = VaultCrypto.fromHex(activeRecord.passwordSaltHex)
+            val wrapping = if (activeRecord.credentialVersion == 2) VaultCrypto.deriveWrappingKey(password, recordSalt)
+                else VaultCrypto.deriveSessionKeyFast(password, recordSalt)
+            // Restore the saved key. Never replace it with this device's random key.
+            val restoredKey = VaultCrypto.decryptVaultKey(VaultCrypto.fromHex(activeRecord.wrappedVaultKeyHex), wrapping)
+            check(_uiState.value.connectedGoogleEmail.trim().equals(rawEmail, ignoreCase = true)) {
+                "Google account changed during login. Please retry."
+            }
+            if (context != null) {
+                LocalVaultStorage.saveKeyBundle(context, restoredKey, recordSalt)
+                LocalVaultStorage.saveUserAuthRecord(context, activeRecord)
+            }
+            activeVaultKey = restoredKey
             salt = recordSalt
-            val wrappingKey = VaultCrypto.deriveSessionKeyFast(password, salt)
-            wrappedVaultKey = VaultCrypto.encryptVaultKey(activeVaultKey, wrappingKey)
-
-            activeRecord = existingRecord.copy(
-                hasLoggedInOnce = true,
-                updatedAt = currentFormattedDate()
-            )
+            wrappedVaultKey = VaultCrypto.fromHex(activeRecord.wrappedVaultKeyHex)
             userAuthRecords[emailKey] = activeRecord
-            if (context != null) {
-                LocalVaultStorage.saveUserAuthRecord(context, activeRecord)
-                viewModelScope.launch(Dispatchers.IO) {
-                    MongoAtlasClient.upsertUserVaultRecord(activeRecord)
-                }
-            }
-        } else {
-            // Creating a new vault account
-            val wrappingKey = VaultCrypto.deriveSessionKeyFast(password, salt)
-            wrappedVaultKey = VaultCrypto.encryptVaultKey(activeVaultKey, wrappingKey)
-            val verifierHex = VaultCrypto.computePasswordVerifierHex(password, salt)
-            activeRecord = MongoVaultUserRecord(
-                email = emailKey,
-                passwordSaltHex = VaultCrypto.toHex(salt),
-                passwordVerifierHex = verifierHex,
-                wrappedVaultKeyHex = VaultCrypto.toHex(wrappedVaultKey),
-                pinVerifierHex = existingRecord?.pinVerifierHex,
-                hasLoggedInOnce = true,
-                updatedAt = currentFormattedDate()
-            )
-            userAuthRecords[emailKey] = activeRecord
-            if (context != null) {
-                LocalVaultStorage.saveUserAuthRecord(context, activeRecord)
-                viewModelScope.launch(Dispatchers.IO) {
-                    MongoAtlasClient.upsertUserVaultRecord(activeRecord)
-                }
-            }
+        } catch (e: javax.crypto.AEADBadTagException) {
+            _uiState.update { it.copy(isVaultUnlocked = false, statusBannerMessage = "Wrong master password. Please enter the correct master password.") }
+            return UnlockAttemptResult.WRONG_PASSWORD
+        } catch (e: Exception) {
+            _uiState.update { it.copy(isVaultUnlocked = false, statusBannerMessage =
+                if (e is AccountApiClient.AccountError || e is IllegalStateException) e.message
+                else "Could not verify your account. Check your connection and retry.") }
+            return UnlockAttemptResult.SERVICE_ERROR
         }
 
         val pinAlreadyConfigured = !activeRecord.pinVerifierHex.isNullOrBlank()
@@ -619,15 +562,11 @@ class VaultViewModel : ViewModel() {
 
         val existingRecord = userAuthRecords[emailKey]
             ?: context?.let { LocalVaultStorage.loadUserAuthRecord(it, emailKey) }
-        val recordSalt = existingRecord?.let { VaultCrypto.fromHex(it.passwordSaltHex).takeIf { s -> s.isNotEmpty() } } ?: salt
+            ?: return false
+        val recordSalt = VaultCrypto.fromHex(existingRecord.passwordSaltHex)
         val pinVerifier = VaultCrypto.computePinVerifierHex(cleanPin, recordSalt)
 
-        val updatedRecord = (existingRecord ?: MongoVaultUserRecord(
-            email = emailKey,
-            passwordSaltHex = VaultCrypto.toHex(recordSalt),
-            passwordVerifierHex = VaultCrypto.computePasswordVerifierHex("default", recordSalt),
-            wrappedVaultKeyHex = VaultCrypto.toHex(wrappedVaultKey)
-        )).copy(
+        val updatedRecord = existingRecord.copy(
             pinVerifierHex = pinVerifier,
             hasLoggedInOnce = true,
             updatedAt = currentFormattedDate()
@@ -636,9 +575,6 @@ class VaultViewModel : ViewModel() {
         userAuthRecords[emailKey] = updatedRecord
         if (context != null) {
             LocalVaultStorage.saveUserAuthRecord(context, updatedRecord)
-            viewModelScope.launch(Dispatchers.IO) {
-                MongoAtlasClient.upsertUserVaultRecord(updatedRecord)
-            }
         }
 
         _uiState.update {
@@ -680,17 +616,6 @@ class VaultViewModel : ViewModel() {
             existingRecord = LocalVaultStorage.loadUserAuthRecord(context, emailKey)
             if (existingRecord != null) {
                 userAuthRecords[emailKey] = existingRecord
-            }
-        }
-        if (existingRecord == null && context != null) {
-            existingRecord = runBlocking(Dispatchers.IO) {
-                withTimeoutOrNull(3500L) {
-                    MongoAtlasClient.findUserVaultRecord(emailKey)
-                }
-            }
-            if (existingRecord != null) {
-                userAuthRecords[emailKey] = existingRecord
-                LocalVaultStorage.saveUserAuthRecord(context, existingRecord)
             }
         }
 
@@ -752,9 +677,6 @@ class VaultViewModel : ViewModel() {
             userAuthRecords[emailKey] = updated
             if (context != null) {
                 LocalVaultStorage.saveUserAuthRecord(context, updated)
-                viewModelScope.launch(Dispatchers.IO) {
-                    MongoAtlasClient.upsertUserVaultRecord(updated)
-                }
             }
         }
         _uiState.update {

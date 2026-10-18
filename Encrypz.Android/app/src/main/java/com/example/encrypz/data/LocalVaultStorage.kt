@@ -27,6 +27,44 @@ object LocalVaultStorage {
     private const val BLOBS_DIR_NAME = "blobs"
     private const val MANIFEST_FILE_NAME = "vault_manifest_v2.json"
 
+    private fun accountId(context: Context): String = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString("active_storage_account", "legacy") ?: "legacy"
+
+    private fun accountPreferences(context: Context) = context.getSharedPreferences(
+        if (accountId(context) == "legacy") PREFS_NAME else "${PREFS_NAME}_${accountId(context)}", Context.MODE_PRIVATE)
+
+    /** Isolate each Google account's keys, PIN and files on this device. */
+    @Synchronized
+    fun selectAccount(context: Context, email: String): Boolean {
+        val normalized = email.trim().lowercase(java.util.Locale.ROOT)
+        val id = VaultCrypto.toHex(java.security.MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray(Charsets.UTF_8)))
+        if (accountId(context) == id) return false
+        val legacy = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val target = context.getSharedPreferences("${PREFS_NAME}_$id", Context.MODE_PRIVATE)
+        // Preserve legacy local data only for its recorded owner; leave originals intact.
+        if (!target.contains(KEY_VAULT_KEY_B64) && legacy.contains("user_auth_record_$normalized")) {
+            val editor = target.edit()
+            for (key in listOf(KEY_VAULT_KEY_B64, KEY_VAULT_SALT_B64, "user_auth_record_$normalized")) {
+                legacy.getString(key, null)?.let { editor.putString(key, it) }
+            }
+            val source = File(context.filesDir, VAULT_DIR_NAME)
+            val destination = File(context.filesDir, "accounts/$id/$VAULT_DIR_NAME")
+            if (source.exists()) check(source.copyRecursively(destination, overwrite = false))
+            editor.putBoolean(KEY_INITIALIZED, legacy.getBoolean(KEY_INITIALIZED, false))
+            check(editor.commit())
+            val legacyEditor = legacy.edit()
+            legacy.getString(KEY_VAULT_KEY_B64, null)?.takeUnless { it.startsWith("ks1:") }?.let {
+                legacyEditor.putString(KEY_VAULT_KEY_B64, DeviceSecrets.seal(Base64.decode(it, Base64.NO_WRAP)))
+            }
+            legacy.getString("user_auth_record_$normalized", null)?.takeUnless { it.startsWith("ks1:") }?.let {
+                legacyEditor.putString("user_auth_record_$normalized", DeviceSecrets.seal(it.toByteArray(Charsets.UTF_8)))
+            }
+            check(legacyEditor.commit())
+        }
+        check(legacy.edit().putString("active_storage_account", id).commit())
+        return true
+    }
+
     data class PersistedVaultKeyBundle(
         val vaultKey: SecretKey,
         val salt: ByteArray
@@ -44,37 +82,31 @@ object LocalVaultStorage {
      */
     @Synchronized
     fun loadOrCreateKeyBundle(context: Context): PersistedVaultKeyBundle {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = accountPreferences(context)
         val existingKeyB64 = prefs.getString(KEY_VAULT_KEY_B64, null)
         val existingSaltB64 = prefs.getString(KEY_VAULT_SALT_B64, null)
 
-        if (!existingKeyB64.isNullOrBlank() && !existingSaltB64.isNullOrBlank()) {
-            try {
-                val keyBytes = Base64.decode(existingKeyB64, Base64.NO_WRAP)
-                val saltBytes = Base64.decode(existingSaltB64, Base64.NO_WRAP)
-                if (keyBytes.size == 32 && saltBytes.isNotEmpty()) {
-                    return PersistedVaultKeyBundle(
-                        vaultKey = SecretKeySpec(keyBytes, "AES"),
-                        salt = saltBytes
-                    )
-                }
-            } catch (_: Exception) {
-                // Fall through and regenerate if corrupted
-            }
+        if (existingKeyB64 != null && existingSaltB64 != null) {
+            val keyBytes = if (existingKeyB64.startsWith("ks1:")) DeviceSecrets.open(existingKeyB64)
+                else Base64.decode(existingKeyB64, Base64.NO_WRAP)
+            require(keyBytes.size == 32) { "Stored vault key is invalid. Restore with your master password." }
+            val bundle = PersistedVaultKeyBundle(SecretKeySpec(keyBytes, "AES"), Base64.decode(existingSaltB64, Base64.NO_WRAP))
+            if (!existingKeyB64.startsWith("ks1:")) saveKeyBundle(context, bundle.vaultKey, bundle.salt)
+            return bundle
         }
+        val bundle = PersistedVaultKeyBundle(VaultCrypto.generateVaultKey(), VaultCrypto.generateSalt())
+        saveKeyBundle(context, bundle.vaultKey, bundle.salt)
+        return bundle
+    }
 
-        val newKey = VaultCrypto.generateVaultKey()
-        val newSalt = VaultCrypto.generateSalt()
-        prefs.edit()
-            .putString(KEY_VAULT_KEY_B64, Base64.encodeToString(newKey.encoded, Base64.NO_WRAP))
-            .putString(KEY_VAULT_SALT_B64, Base64.encodeToString(newSalt, Base64.NO_WRAP))
-            .apply()
-
-        return PersistedVaultKeyBundle(vaultKey = newKey, salt = newSalt)
+    fun saveKeyBundle(context: Context, key: SecretKey, salt: ByteArray) {
+        check(accountPreferences(context).edit()
+            .putString(KEY_VAULT_KEY_B64, DeviceSecrets.seal(key.encoded))
+            .putString(KEY_VAULT_SALT_B64, Base64.encodeToString(salt, Base64.NO_WRAP)).commit())
     }
 
     fun isInitialized(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = accountPreferences(context)
         val manifestFile = File(getVaultRootDir(context), MANIFEST_FILE_NAME)
         return prefs.getBoolean(KEY_INITIALIZED, false) && manifestFile.exists()
     }
@@ -85,9 +117,10 @@ object LocalVaultStorage {
         record: MongoAtlasClient.MongoVaultUserRecord
     ) {
         val keyEmail = record.email.trim().lowercase().ifBlank { "default_vault_user" }
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = accountPreferences(context)
         val json = JSONObject().apply {
             put("email", keyEmail)
+            put("credentialVersion", record.credentialVersion)
             put("passwordSaltHex", record.passwordSaltHex)
             put("passwordVerifierHex", record.passwordVerifierHex)
             put("wrappedVaultKeyHex", record.wrappedVaultKeyHex)
@@ -97,7 +130,7 @@ object LocalVaultStorage {
             put("googleRefreshToken", record.googleRefreshToken ?: "")
         }
         prefs.edit()
-            .putString("user_auth_record_$keyEmail", json.toString())
+            .putString("user_auth_record_$keyEmail", DeviceSecrets.seal(json.toString().toByteArray(Charsets.UTF_8)))
             .apply()
     }
 
@@ -107,13 +140,14 @@ object LocalVaultStorage {
         email: String
     ): MongoAtlasClient.MongoVaultUserRecord? {
         val keyEmail = email.trim().lowercase().ifBlank { "default_vault_user" }
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = accountPreferences(context)
         val raw = prefs.getString("user_auth_record_$keyEmail", null)
         if (raw.isNullOrBlank()) return null
         return try {
-            val json = JSONObject(raw)
+            val json = JSONObject(if (raw.startsWith("ks1:")) String(DeviceSecrets.open(raw), Charsets.UTF_8) else raw)
             MongoAtlasClient.MongoVaultUserRecord(
                 email = json.optString("email", keyEmail),
+                credentialVersion = json.optInt("credentialVersion", 1),
                 passwordSaltHex = json.getString("passwordSaltHex"),
                 passwordVerifierHex = json.getString("passwordVerifierHex"),
                 wrappedVaultKeyHex = json.getString("wrappedVaultKeyHex"),
@@ -205,7 +239,7 @@ object LocalVaultStorage {
             val manifestFile = File(rootDir, MANIFEST_FILE_NAME)
             manifestFile.writeText(rootJson.toString())
 
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            accountPreferences(context)
                 .edit()
                 .putBoolean(KEY_INITIALIZED, true)
                 .apply()
@@ -288,7 +322,8 @@ object LocalVaultStorage {
     }
 
     private fun getVaultRootDir(context: Context): File {
-        val dir = File(context.filesDir, VAULT_DIR_NAME)
+        val id = accountId(context)
+        val dir = File(context.filesDir, if (id == "legacy") VAULT_DIR_NAME else "accounts/$id/$VAULT_DIR_NAME")
         if (!dir.exists()) dir.mkdirs()
         return dir
     }

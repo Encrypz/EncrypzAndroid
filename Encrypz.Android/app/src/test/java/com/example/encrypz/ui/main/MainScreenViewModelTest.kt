@@ -20,24 +20,7 @@ class MainScreenViewModelTest {
     val viewModel = MainScreenViewModel(FakeMyModelRepository())
     assertEquals(viewModel.uiState.first(), MainScreenUiState.Loading)
   }
-  @Test
-  fun mongoBsonEncodeDecode_roundTripAndAtlasCheck() {
-    val doc = linkedMapOf<String, Any?>(
-      "email" to "test@example.com",
-      "passwordVerifierHex" to "abcd1234",
-      "count" to 42
-    )
-    val bytes = com.example.encrypz.data.MongoAtlasClient.encodeBsonDocument(doc)
-    val (decoded, _) = com.example.encrypz.data.MongoAtlasClient.decodeBsonDocument(bytes, 0)
-    assertEquals("test@example.com", decoded["email"])
-    assertEquals("abcd1234", decoded["passwordVerifierHex"])
-    assertEquals(42, decoded["count"])
 
-    com.example.encrypz.data.MongoAtlasClient.executeOnPrimary { session ->
-      val dbs = session.runCommand(linkedMapOf("listDatabases" to 1, "\$db" to "admin"))
-      println("ATLAS_DBS: $dbs")
-    }
-  }
 }
 
 private class FakeMyModelRepository : DataRepository {

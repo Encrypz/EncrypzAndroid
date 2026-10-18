@@ -9,7 +9,6 @@ import android.os.Build
 import android.provider.DocumentsContract
 import com.example.encrypz.auth.GoogleAuthConfig
 import com.example.encrypz.auth.LoopbackGoogleOAuthServer
-import com.example.encrypz.data.MongoAtlasClient
 import com.example.encrypz.ui.vault.VaultFileEntry
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.Identity
@@ -149,7 +148,7 @@ object GoogleDriveSyncManager {
         try {
             val request = AuthorizationRequest.builder()
                 .setAccount(Account(cleanEmail, "com.google"))
-                .setRequestedScopes(listOf(Scope(GoogleAuthConfig.SCOPE_DRIVE_FILE)))
+                .setRequestedScopes(listOf(Scope(GoogleAuthConfig.SCOPE_DRIVE_FILE), Scope("https://www.googleapis.com/auth/userinfo.email")))
                 .build()
             val result = Tasks.await(
                 Identity.getAuthorizationClient(context).authorize(request), 60, TimeUnit.SECONDS
@@ -166,6 +165,12 @@ object GoogleDriveSyncManager {
             TokenResolution.Failed(driveErrorMessage(ex))
         }
     }
+
+    suspend fun accountAccessToken(context: Context, email: String): String =
+        when (val result = resolveDriveAccessToken(context, email, false)) {
+            is TokenResolution.Token -> result.accessToken
+            else -> throw IllegalStateException("Allow Google account permissions from the login screen or Security tab, then retry.")
+        }
 
     private fun driveErrorMessage(ex: Exception): String {
         val cause = ex.cause ?: ex
@@ -259,7 +264,6 @@ object GoogleDriveSyncManager {
                 existingDriveId = file.driveFileId?.takeIf { !it.startsWith("content://") }
             )
 
-            recordEncryptedFileInMongo(file, cleanEmail, safeEncryptedName, uploadedDriveId)
 
             DriveUploadResult.UploadedToDriveApi(
                 driveFileId = uploadedDriveId,
@@ -294,7 +298,7 @@ object GoogleDriveSyncManager {
                         ivHex = file.ivHex,
                         existingDriveId = file.driveFileId?.takeIf { !it.startsWith("content://") }
                     )
-                    recordEncryptedFileInMongo(file, cleanEmail, safeEncryptedName, uploadedDriveId)
+
                     return@withContext DriveUploadResult.UploadedToDriveApi(
                         driveFileId = uploadedDriveId,
                         folderId = folderId,
@@ -314,28 +318,6 @@ object GoogleDriveSyncManager {
                 encryptedFileName = safeEncryptedName,
                 reason = firstEx.message ?: "Direct Drive API upload failed"
             )
-        }
-    }
-
-    private fun recordEncryptedFileInMongo(
-        file: VaultFileEntry,
-        cleanEmail: String,
-        safeEncryptedName: String,
-        uploadedDriveId: String
-    ) {
-        try {
-            MongoAtlasClient.upsertEncryptedFileMetadata(
-                fileId = file.id,
-                email = cleanEmail,
-                encryptedFileName = safeEncryptedName,
-                driveFileId = uploadedDriveId,
-                driveFolderName = VAULT_DRIVE_FOLDER_NAME,
-                ivHex = file.ivHex,
-                sizeBytes = file.sizeBytes,
-                uploadedAt = file.uploadedAt,
-                isDeleted = file.isDeleted
-            )
-        } catch (_: Exception) {
         }
     }
 

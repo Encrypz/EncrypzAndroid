@@ -120,6 +120,7 @@ fun MainNavigation(
                     isRequestingDrivePermission = vaultState.isRequestingDrivePermission,
                     hasExistingVaultAccount = vaultState.hasExistingVaultAccount,
                     isCheckingAccountStatus = vaultState.isCheckingAccountStatus,
+                    accountError = vaultState.statusBannerMessage,
                     hasCompletedFirstLogin = vaultState.hasCompletedFirstLogin,
                     isPinSet = vaultState.isPinSet,
                     onGoogleSignInChanged = { signedIn, email ->
@@ -135,7 +136,12 @@ fun MainNavigation(
                     },
                     onRequestDrivePermission = requestDriveAccess,
                     onUnlockWithPassword = { password, isCreatingVault ->
-                        vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val result = vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
+                            if (result == com.example.encrypz.ui.vault.UnlockAttemptResult.SERVICE_ERROR)
+                                throw IllegalStateException(vaultViewModel.uiState.value.statusBannerMessage ?: "Account service unavailable.")
+                            result
+                        }
                     },
                     onUnlockWithPin = { pin ->
                         vaultViewModel.unlockWithPin(pin, context)

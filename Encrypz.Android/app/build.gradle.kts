@@ -26,12 +26,8 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        buildConfigField("String", "ACCOUNT_API_BASE_URL", "\"${localProp("ACCOUNT_API_BASE_URL")}\"")
         buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${localProp("GOOGLE_CLIENT_ID")}\"")
-        buildConfigField("String", "GOOGLE_CLIENT_SECRET", "\"${localProp("GOOGLE_CLIENT_SECRET")}\"")
-        buildConfigField("String", "MONGO_URI_TEMPLATE", "\"${localProp("MONGO_URI_TEMPLATE")}\"")
-        buildConfigField("String", "MONGO_USER", "\"${localProp("MONGO_USER")}\"")
-        buildConfigField("String", "MONGO_PASS", "\"${localProp("MONGO_PASS")}\"")
-        buildConfigField("String", "MONGO_SHARD_HOSTS", "\"${localProp("MONGO_SHARD_HOSTS")}\"")
     }
 
     buildTypes {

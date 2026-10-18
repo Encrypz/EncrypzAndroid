@@ -50,7 +50,7 @@ class VaultViewModelTest {
     @Test
     fun vaultViewModel_createFolderAndEncryptNote_updatesStateAndDecrypts() {
         val viewModel = VaultViewModel()
-        assertTrue(viewModel.unlockWithMasterPassword("CorrectHorseBatteryStaple!99"))
+        assertTrue(viewModel.unlockWithMasterPassword("CorrectHorseBatteryStaple!99", isCreatingNewVault = true))
         assertTrue(viewModel.uiState.value.isVaultUnlocked)
 
         val initialFolders = viewModel.uiState.value.visibleFolders.size
@@ -175,21 +175,26 @@ class VaultViewModelTest {
     }
 
     @Test
-    fun mongoAtlasClient_upsertsAndFindsUserMasterPasswordVerifier() {
+    fun accountKeyCanBeRestoredOnAnotherDevice() {
+        val originalKey = VaultCrypto.generateVaultKey()
         val salt = VaultCrypto.generateSalt()
-        val verifierHex = VaultCrypto.computePasswordVerifierHex("MongoMasterPass#0618", salt)
-        val record = com.example.encrypz.data.MongoAtlasClient.MongoVaultUserRecord(
-            email = "test_vault_user@encrypz.com",
-            passwordSaltHex = VaultCrypto.toHex(salt),
-            passwordVerifierHex = verifierHex,
-            wrappedVaultKeyHex = "aabbccddeeff001122334455",
-            updatedAt = "2026-10-17"
-        )
-        val upserted = com.example.encrypz.data.MongoAtlasClient.upsertUserVaultRecord(record)
-        if (upserted) {
-            val fetched = com.example.encrypz.data.MongoAtlasClient.findUserVaultRecord("test_vault_user@encrypz.com")
-            assertEquals(verifierHex, fetched?.passwordVerifierHex)
-        }
+        val password = "CrossDevicePassword#2026"
+        val wrapping = VaultCrypto.deriveWrappingKey(password, salt)
+        val wrapped = VaultCrypto.encryptVaultKey(originalKey, wrapping)
+        val encryptedFile = VaultCrypto.encryptPayload("private file".toByteArray(), originalKey)
+        val restored = VaultCrypto.decryptVaultKey(wrapped, VaultCrypto.deriveWrappingKey(password, salt))
+        org.junit.Assert.assertArrayEquals(originalKey.encoded, restored.encoded)
+        org.junit.Assert.assertArrayEquals("private file".toByteArray(), VaultCrypto.decryptPayload(encryptedFile, restored))
+        assertFalse(VaultCrypto.accountProof(wrapping) == VaultCrypto.toHex(wrapping.encoded))
+    }
+
+    @Test
+    fun creatingExistingAccountDoesNotOverwriteItsKey() {
+        val model = VaultViewModel()
+        model.connectGoogleAccount("test@example.com")
+        assertTrue(model.unlockWithMasterPassword("OriginalPassword#2026", true))
+        model.lockVault()
+        assertFalse(model.unlockWithMasterPassword("ReplacementPassword#2026", true))
+        assertTrue(model.unlockWithMasterPassword("OriginalPassword#2026"))
     }
 }
-

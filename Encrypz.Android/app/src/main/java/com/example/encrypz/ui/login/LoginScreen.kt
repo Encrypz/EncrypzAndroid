@@ -113,6 +113,8 @@ import com.example.encrypz.theme.EncrypzSuccessBorder
 import com.example.encrypz.theme.EncrypzText
 import com.example.encrypz.theme.EncrypzTheme
 import com.example.encrypz.theme.EncrypzWarning
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.example.encrypz.ui.vault.UnlockAttemptResult
 
 private enum class AuthInfoDialog {
@@ -129,12 +131,13 @@ fun LoginScreen(
     connectedAccountEmail: String = "",
     isDrivePermissionGranted: Boolean = false,
     driveSetupError: String? = null,
+    accountError: String? = null,
     isRequestingDrivePermission: Boolean = false,
     hasExistingVaultAccount: Boolean = false,
     isCheckingAccountStatus: Boolean = false,
     hasCompletedFirstLogin: Boolean = false,
     isPinSet: Boolean = false,
-    onUnlockWithPassword: ((String, Boolean) -> UnlockAttemptResult)? = null,
+    onUnlockWithPassword: (suspend (String, Boolean) -> UnlockAttemptResult)? = null,
     onUnlockWithPin: ((String) -> Boolean)? = null,
     onSetupPinAfterFirstLogin: ((String) -> Boolean)? = null,
     onRequestDrivePermission: (() -> Unit)? = null,
@@ -147,14 +150,14 @@ fun LoginScreen(
     var usePinMode by rememberSaveable { mutableStateOf(hasCompletedFirstLogin && isPinSet) }
     var showPinSetupStepAfterFirstLogin by rememberSaveable { mutableStateOf(false) }
 
-    var masterPassword by rememberSaveable { mutableStateOf("") }
-    var confirmPassword by rememberSaveable { mutableStateOf("") }
+    var masterPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
     var passwordVisible by rememberSaveable { mutableStateOf(false) }
     var confirmPasswordVisible by rememberSaveable { mutableStateOf(false) }
 
-    var pinInput by rememberSaveable { mutableStateOf("") }
-    var newPinInput by rememberSaveable { mutableStateOf("") }
-    var confirmNewPinInput by rememberSaveable { mutableStateOf("") }
+    var pinInput by remember { mutableStateOf("") }
+    var newPinInput by remember { mutableStateOf("") }
+    var confirmNewPinInput by remember { mutableStateOf("") }
 
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -224,48 +227,64 @@ fun LoginScreen(
         VaultCrypto.evaluatePasswordStrength(masterPassword)
     }
 
-    val handleMasterPasswordUnlock = {
-        errorMessage = null
-        if (!isCreatingVault && !hasExistingVaultAccount && !isCheckingAccountStatus) {
-            // User attempted to log in with an email that does not have an Encrypz account created
-            isCreatingVault = true
-            usePinMode = false
-            infoMessage = "No Encrypz account found for $activeEmail. Please set and confirm a master password to create your account."
-        } else if (masterPassword.isBlank()) {
-            errorMessage = "Please enter your master password."
-        } else if (isCreatingVault && masterPassword.length < 12) {
-            errorMessage = "Use at least 12 characters for your new vault master password."
-        } else if (isCreatingVault && masterPassword != confirmPassword) {
-            errorMessage = "The master passwords do not match."
-        } else {
-            val result = onUnlockWithPassword?.invoke(masterPassword, isCreatingVault)
-                ?: UnlockAttemptResult.SUCCESS
-            when (result) {
-                UnlockAttemptResult.SUCCESS -> {
-                    if (!isPinSet) {
-                        // First login completed — prompt user to set their Quick-Unlock PIN for future logins
-                        showPinSetupStepAfterFirstLogin = true
-                        errorMessage = null
-                        infoMessage = null
-                    } else {
-                        onLoginSuccess()
-                    }
-                }
-                UnlockAttemptResult.ACCOUNT_NOT_CREATED -> {
-                    isCreatingVault = true
-                    usePinMode = false
+    val loginScope = rememberCoroutineScope()
+    var isSubmitting by remember { mutableStateOf(false) }
+    val currentAccountError by androidx.compose.runtime.rememberUpdatedState(accountError)
+    val handleMasterPasswordUnlock: () -> Unit = {
+        if (!isSubmitting) {
+            loginScope.launch {
+                isSubmitting = true
+                try {
                     errorMessage = null
-                    infoMessage = "No Encrypz account found for $activeEmail. Directed to account creation — please set and confirm your master password."
-                }
-                UnlockAttemptResult.WRONG_PASSWORD -> {
-                    errorMessage = "Wrong master password. Please enter the correct master password."
-                }
-                else -> {
-                    errorMessage = "Wrong master password. Please enter the correct master password."
-                }
+                    if (!isCreatingVault && !hasExistingVaultAccount && !isCheckingAccountStatus) {
+                        // User attempted to log in with an email that does not have an Encrypz account created
+                        isCreatingVault = true
+                        usePinMode = false
+                        infoMessage = "No Encrypz account found for $activeEmail. Please set and confirm a master password to create your account."
+                    } else if (masterPassword.isBlank()) {
+                        errorMessage = "Please enter your master password."
+                    } else if (isCreatingVault && masterPassword.length < 12) {
+                        errorMessage = "Use at least 12 characters for your new vault master password."
+                    } else if (isCreatingVault && masterPassword != confirmPassword) {
+                        errorMessage = "The master passwords do not match."
+                    } else {
+                        val result = onUnlockWithPassword?.invoke(masterPassword, isCreatingVault)
+                        ?: UnlockAttemptResult.SUCCESS
+                        when (result) {
+                            UnlockAttemptResult.SUCCESS -> {
+                                if (!isPinSet) {
+                                    // First login completed — prompt user to set their Quick-Unlock PIN for future logins
+                                    showPinSetupStepAfterFirstLogin = true
+                                    errorMessage = null
+                                    infoMessage = null
+                                } else {
+                                    onLoginSuccess()
+                                }
+                            }
+                            UnlockAttemptResult.ACCOUNT_NOT_CREATED -> {
+                                isCreatingVault = true
+                                usePinMode = false
+                                errorMessage = null
+                                infoMessage = "No Encrypz account found for $activeEmail. Directed to account creation — please set and confirm your master password."
+                            }
+                            UnlockAttemptResult.SERVICE_ERROR -> {
+                                errorMessage = currentAccountError ?: "Account service unavailable. Please retry."
+                            }
+                            UnlockAttemptResult.WRONG_PASSWORD -> {
+                                errorMessage = "Wrong master password. Please enter the correct master password."
+                            }
+                            else -> {
+                                errorMessage = "Wrong master password. Please enter the correct master password."
+                            }
+                        }
+                    }
+                } catch (e: IllegalStateException) {
+                    errorMessage = e.message ?: "Account service unavailable. Please retry."
+                } finally { isSubmitting = false }
             }
         }
     }
+
 
     val handlePinUnlock = {
         errorMessage = null
@@ -1129,7 +1148,7 @@ fun LoginScreen(
                                 // Primary Action Button (.auth-btn-white-full / primary)
                                 Button(
                                     onClick = handleMasterPasswordUnlock,
-                                    enabled = masterPassword.isNotEmpty() && !isCheckingAccountStatus,
+                                    enabled = masterPassword.isNotEmpty() && !isCheckingAccountStatus && !isSubmitting,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(46.dp),
@@ -1143,6 +1162,7 @@ fun LoginScreen(
                                 ) {
                                     Text(
                                         text = when {
+                                            isSubmitting -> "Verifying account..."
                                             isCheckingAccountStatus -> "Checking account..."
                                             isCreatingVault -> "Create account & open vault"
                                             else -> "Unlock vault"

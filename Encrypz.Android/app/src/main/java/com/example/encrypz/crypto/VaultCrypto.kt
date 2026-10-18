@@ -48,10 +48,10 @@ object VaultCrypto {
      * Derives a wrapping key using PBKDF2-HMAC-SHA-256 as specified in the Encrypz README.
      */
     fun deriveWrappingKey(password: String, salt: ByteArray): SecretKey {
-        val factory = getPbkdf2Factory()
+        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, 256)
-        val tmp = factory.generateSecret(spec)
-        return SecretKeySpec(tmp.encoded, "AES")
+        return try { SecretKeySpec(factory.generateSecret(spec).encoded, "AES") }
+        finally { spec.clearPassword() }
     }
 
     /**
@@ -88,6 +88,12 @@ object VaultCrypto {
         digest.update(salt)
         val hashBytes = digest.digest(pinKeyBytes)
         return toHex(hashBytes)
+    }
+
+    fun accountProof(wrappingKey: SecretKey): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        digest.update("ENCRYPZ_ACCOUNT_PROOF_V2:".encodeToByteArray())
+        return toHex(digest.digest(wrappingKey.encoded))
     }
 
     fun toHex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
