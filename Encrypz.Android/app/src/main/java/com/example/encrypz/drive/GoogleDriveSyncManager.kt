@@ -214,10 +214,11 @@ object GoogleDriveSyncManager {
     suspend fun uploadEncryptedFileToDrive(
         context: Context,
         accountEmail: String,
-        file: VaultFileEntry
+        file: VaultFileEntry,
+        encryptedDriveName: String
     ): DriveUploadResult = withContext(Dispatchers.IO) {
         val cleanEmail = accountEmail.trim()
-        val safeEncryptedName = if (file.name.endsWith(".enc")) file.name else "${file.name}.enc"
+        val safeEncryptedName = encryptedDriveName
 
         if (cleanEmail.isBlank() || !cleanEmail.contains("@")) {
             return@withContext DriveUploadResult.UploadFailed(

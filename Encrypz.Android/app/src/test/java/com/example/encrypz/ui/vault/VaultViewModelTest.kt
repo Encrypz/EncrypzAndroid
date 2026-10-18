@@ -66,6 +66,7 @@ class VaultViewModelTest {
     @Test
     fun vaultViewModel_recycleBinAndRestore_movesItemsCorrectly() {
         val viewModel = VaultViewModel()
+        viewModel.encryptAndAddFile("recycle-test.txt", "Test file".encodeToByteArray())
         val targetFile = viewModel.uiState.value.visibleFiles.first()
 
         viewModel.moveFileToRecycleBin(targetFile.id)
@@ -110,6 +111,9 @@ class VaultViewModelTest {
         assertTrue(viewModel.uiState.value.isVaultUnlocked)
         assertTrue(viewModel.uiState.value.hasExistingVaultAccount)
         assertTrue(viewModel.uiState.value.hasCompletedFirstLogin)
+        assertTrue(viewModel.uiState.value.files.isEmpty())
+        assertTrue(viewModel.uiState.value.folders.isEmpty())
+        assertTrue(viewModel.uiState.value.deletedFiles.isEmpty())
     }
 
     @Test

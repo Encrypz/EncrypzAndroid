@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.encrypz.auth.GoogleAuthConfig
+import com.example.encrypz.crypto.VaultFileNames
 import com.example.encrypz.crypto.VaultCrypto
 import com.example.encrypz.data.LocalVaultStorage
 import com.example.encrypz.data.MongoAtlasClient
@@ -179,7 +180,7 @@ class VaultViewModel : ViewModel() {
     private var isStorageLoaded: Boolean = false
     private val userAuthRecords = ConcurrentHashMap<String, MongoVaultUserRecord>()
 
-    private val _uiState = MutableStateFlow(createInitialState(activeVaultKey))
+    private val _uiState = MutableStateFlow(createInitialState())
     val uiState: StateFlow<VaultUiState> = _uiState.asStateFlow()
 
     /**
@@ -210,7 +211,7 @@ class VaultViewModel : ViewModel() {
                 )
             }
         } else {
-            val freshInitialState = createInitialState(activeVaultKey)
+            val freshInitialState = createInitialState()
             val currentEmail = _uiState.value.connectedGoogleEmail
             val initialFiles = freshInitialState.files.map { file ->
                 if (currentEmail.isNotBlank()) file.copy(googleAccountEmail = currentEmail) else file
@@ -875,7 +876,13 @@ class VaultViewModel : ViewModel() {
             ensureLocalStorageLoaded(context)
         }
 
-        val safeName = if (fileName.endsWith(".enc")) fileName else "$fileName.enc"
+        val restoredName = try {
+            VaultFileNames.decryptOrLegacy(fileName, activeVaultKey)
+        } catch (_: Exception) {
+            _uiState.update { it.copy(statusBannerMessage = "This filename cannot be decrypted with the current vault key.") }
+            return
+        }
+        val safeName = if (restoredName.endsWith(".enc")) restoredName else "$restoredName.enc"
 
         // Preserve valid Encrypz ciphertext; the source may be local or remote.
         val alreadyDecryptedPlaintext: ByteArray? = if (fileName.endsWith(".enc") && rawBytes.size > 28) {
@@ -976,7 +983,9 @@ class VaultViewModel : ViewModel() {
         fileId: String,
         forceDocumentSaver: Boolean = false
     ) {
+        if (!_uiState.value.isVaultUnlocked) return
         val targetFile = _uiState.value.files.find { it.id == fileId } ?: return
+        val encryptedDriveName = VaultFileNames.encrypt(targetFile.name, activeVaultKey)
         if (!activeDriveUploads.add(fileId)) return
         val accountEmail = _uiState.value.connectedGoogleEmail
             .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
@@ -991,7 +1000,7 @@ class VaultViewModel : ViewModel() {
 
         viewModelScope.launch {
             try {
-                when (val result = GoogleDriveSyncManager.uploadEncryptedFileToDrive(context, accountEmail, targetFile)) {
+                when (val result = GoogleDriveSyncManager.uploadEncryptedFileToDrive(context, accountEmail, targetFile, encryptedDriveName)) {
                     is GoogleDriveSyncManager.DriveUploadResult.UploadedToDriveApi -> {
                         _uiState.update { state ->
                             state.copy(
@@ -1154,21 +1163,26 @@ class VaultViewModel : ViewModel() {
                 existingFileNames = existingNames
             )) {
                 is GoogleDriveSyncManager.DriveRemoteSyncResult.Success -> {
-                    val importedEntries = syncResult.downloadedFiles.map { remote ->
+                    val importedEntries = syncResult.downloadedFiles.mapNotNull { remote ->
+                        val restoredName = try {
+                            VaultFileNames.decryptOrLegacy(remote.name, activeVaultKey)
+                        } catch (_: Exception) {
+                            return@mapNotNull null
+                        }
                         val decrypted = try {
                             VaultCrypto.decryptPayload(remote.encryptedBytes, activeVaultKey)
                         } catch (_: Exception) {
                             null
                         }
                         val thumbBytes = if (decrypted != null) {
-                            extractThumbnailFromDecryptedBytes(context, remote.name, decrypted)
+                            extractThumbnailFromDecryptedBytes(context, restoredName, decrypted)
                         } else {
                             null
                         }
                         val encThumb = thumbBytes?.let { VaultCrypto.encryptPayload(it, activeVaultKey) }
                         VaultFileEntry(
                             id = UUID.randomUUID().toString(),
-                            name = remote.name,
+                            name = restoredName,
                             folderId = null,
                             sizeBytes = (decrypted?.size ?: remote.encryptedBytes.size).toLong(),
                             uploadedAt = currentFormattedDate(),
@@ -1419,115 +1433,7 @@ class VaultViewModel : ViewModel() {
     }
 
     companion object {
-        private fun createInitialState(vaultKey: SecretKey): VaultUiState {
-            val folderDocsId = "folder-docs"
-            val folderPhotosId = "folder-photos"
-            val folderFinanceId = "folder-finance"
-
-            val folders = listOf(
-                VaultFolder(
-                    id = folderDocsId,
-                    name = "Documents",
-                    parentFolderId = null,
-                    createdAt = "Oct 12, 2026",
-                    ivHex = VaultCrypto.extractIvHex(VaultCrypto.encryptPayload("Documents".encodeToByteArray(), vaultKey))
-                ),
-                VaultFolder(
-                    id = folderPhotosId,
-                    name = "Photos",
-                    parentFolderId = null,
-                    createdAt = "Oct 14, 2026",
-                    ivHex = VaultCrypto.extractIvHex(VaultCrypto.encryptPayload("Photos".encodeToByteArray(), vaultKey))
-                ),
-                VaultFolder(
-                    id = folderFinanceId,
-                    name = "Financial & Tax",
-                    parentFolderId = null,
-                    createdAt = "Oct 15, 2026",
-                    ivHex = VaultCrypto.extractIvHex(VaultCrypto.encryptPayload("Financial & Tax".encodeToByteArray(), vaultKey))
-                )
-            )
-
-            fun makeEncryptedFile(
-                id: String,
-                name: String,
-                folderId: String?,
-                sizeBytes: Long,
-                date: String,
-                samplePlaintext: String,
-                isDeleted: Boolean = false
-            ): VaultFileEntry {
-                val encrypted = VaultCrypto.encryptPayload(samplePlaintext.encodeToByteArray(), vaultKey)
-                return VaultFileEntry(
-                    id = id,
-                    name = name,
-                    folderId = folderId,
-                    sizeBytes = sizeBytes,
-                    uploadedAt = date,
-                    googleAccountEmail = "",
-                    encryptedPayload = encrypted,
-                    ivHex = VaultCrypto.extractIvHex(encrypted),
-                    isDeleted = isDeleted
-                )
-            }
-
-            val files = listOf(
-                makeEncryptedFile(
-                    id = "file-1",
-                    name = "passwords.txt.enc",
-                    folderId = null,
-                    sizeBytes = 4_280L,
-                    date = "Oct 16, 2026",
-                    samplePlaintext = "=== ENCRYPZ ZERO-KNOWLEDGE VAULT ===\nGitHub SSH Key: SHA256:9f86d081884c7d659a2feaa0c55ad015\nProtonMail Recovery: 8492-ABCD-EF01-9921\nAWS Root MFA Backup: JBSWY3DPEHPK3PXP\nHardware Wallet PIN: [Protected in Memory]"
-                ),
-                makeEncryptedFile(
-                    id = "file-2",
-                    name = "tax_returns_2025.pdf.enc",
-                    folderId = null,
-                    sizeBytes = 1_482_900L,
-                    date = "Oct 15, 2026",
-                    samplePlaintext = "DOCUMENT: Form 1040 Individual Tax Return Summary (2025)\nFILING STATUS: Verified & Electronically Signed\nADJUSTED GROSS INCOME: $148,500.00\nFEDERAL TAX WITHHELD: $28,420.00\nREFUND STATUS: Approved\n\nEncrypted client-side via Encrypz AES-256-GCM before Google Drive upload."
-                ),
-                makeEncryptedFile(
-                    id = "file-3",
-                    name = "passport_scan_hd.jpg.enc",
-                    folderId = null,
-                    sizeBytes = 3_145_728L,
-                    date = "Oct 14, 2026",
-                    samplePlaintext = "IMAGE_PREVIEW:PASSPORT_ID_SCAN\nDocument Type: International Biometric Passport\nResolution: 3840 x 2160 px (24-bit sRGB)\nEXIF GPS Metadata: Stripped locally prior to AES-256-GCM encryption"
-                ),
-                makeEncryptedFile(
-                    id = "file-4",
-                    name = "recovery_seed_phrase.txt.enc",
-                    folderId = folderDocsId,
-                    sizeBytes = 1_024L,
-                    date = "Oct 12, 2026",
-                    samplePlaintext = "1.river 2.shield 3.quantum 4.anchor 5.cobalt 6.velvet 7.orbit 8.cipher 9.ember 10.glacier 11.vertex 12.zenith"
-                ),
-                makeEncryptedFile(
-                    id = "file-5",
-                    name = "family_vacation_clip.mp4.enc",
-                    folderId = folderPhotosId,
-                    sizeBytes = 18_450_000L,
-                    date = "Oct 10, 2026",
-                    samplePlaintext = "VIDEO_PREVIEW:4K_HDR_STREAM\nCodec: H.265 / HEVC (3840x2160 @ 60fps)\nDuration: 01:42\nAudio: AAC-LC Stereo 48kHz\nEncryption: AES-256-GCM Authenticated Stream"
-                ),
-                makeEncryptedFile(
-                    id = "file-6",
-                    name = "old_bank_statement_q1.pdf.enc",
-                    folderId = null,
-                    sizeBytes = 642_100L,
-                    date = "Sep 28, 2026",
-                    samplePlaintext = "Archived Q1 Statement (Soft-deleted in Recycle Bin)",
-                    isDeleted = true
-                )
-            )
-
-            return VaultUiState(
-                folders = folders,
-                files = files
-            )
-        }
+        private fun createInitialState(): VaultUiState = VaultUiState()
     }
 }
 
