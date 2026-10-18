@@ -304,10 +304,10 @@ class VaultViewModel : ViewModel() {
                     }
                 }
 
-                if (hasDriveAccess) {
-                    GoogleDriveSyncManager.ensureEncrypzFolderExists(context, cleanEmail, allowInteractiveAuth = false)
-                } else if (requestDrivePermissionIfNeeded) {
+                if (requestDrivePermissionIfNeeded) {
                     requestGoogleDrivePermission(context, cleanEmail)
+                } else if (hasDriveAccess) {
+                    GoogleDriveSyncManager.ensureEncrypzFolderExists(context, cleanEmail, allowInteractiveAuth = false)
                 }
             }
         }
@@ -350,6 +350,14 @@ class VaultViewModel : ViewModel() {
                 accountEmail = targetEmail,
                 fallbackRefreshTokenFromDb = existingRecord?.googleRefreshToken
             )
+
+            if (result.consentIntent != null) {
+                _uiState.update {
+                    it.copy(isRequestingDrivePermission = false,
+                        pendingDriveConsentIntent = result.consentIntent)
+                }
+                return@launch
+            }
 
             val resolvedEmail = result.email.trim().ifBlank { targetEmail }
             val resolvedKey = resolvedEmail.lowercase(Locale.ROOT)
@@ -1052,7 +1060,7 @@ class VaultViewModel : ViewModel() {
                 saveFileToGoogleDrive(context, pendingFileId, forceDocumentSaver = false)
             }
         } else if (granted) {
-            syncVaultWithGoogleDrive(context)
+            requestGoogleDrivePermission(context)
         }
     }
 
@@ -1203,7 +1211,7 @@ class VaultViewModel : ViewModel() {
                     _uiState.update { state ->
                         state.copy(
                             isSyncingWithDrive = false,
-                            statusBannerMessage = "Encrypted files are saved via Google Drive Document Saver (.enc)"
+                            statusBannerMessage = syncResult.reason
                         )
                     }
                 }

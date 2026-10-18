@@ -60,7 +60,8 @@ object GoogleDriveSyncManager {
         val granted: Boolean,
         val email: String,
         val folderId: String? = null,
-        val refreshToken: String? = null
+        val refreshToken: String? = null,
+        val consentIntent: Intent? = null
     )
 
     data class RemoteDriveEncryptedFile(
@@ -116,12 +117,32 @@ object GoogleDriveSyncManager {
                 allowInteractiveLoopback = false,
                 fallbackRefreshTokenFromDb = fallbackRefreshTokenFromDb
             )
+            if (silent is TokenResolution.ConsentRequired) {
+                return@withContext DrivePermissionResult(
+                    granted = false, email = cleanEmail, consentIntent = silent.intent
+                )
+            }
             if (silent is TokenResolution.Token) {
                 val folderId = try {
                     findOrCreateEncrypzVaultFolder(context, cleanEmail, silent.accessToken)
                 } catch (ex: Exception) {
                     if (isAuthError(ex)) {
                         LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
+                        try { GoogleAuthUtil.clearToken(context, silent.accessToken) } catch (_: Exception) { }
+                        val refreshed = resolveDriveAccessToken(context, cleanEmail, false)
+                        if (refreshed is TokenResolution.ConsentRequired) {
+                            return@withContext DrivePermissionResult(
+                                granted = false, email = cleanEmail, consentIntent = refreshed.intent
+                            )
+                        }
+                        if (refreshed is TokenResolution.Token) {
+                            return@withContext DrivePermissionResult(
+                                granted = true, email = cleanEmail,
+                                folderId = try {
+                                    findOrCreateEncrypzVaultFolder(context, cleanEmail, refreshed.accessToken)
+                                } catch (_: Exception) { null }
+                            )
+                        }
                         null
                     } else {
                         // Network/transient error: permission is still granted, folder will be created on upload
@@ -137,30 +158,6 @@ object GoogleDriveSyncManager {
                     )
                 }
             }
-        }
-
-        // Launch OAuth 2.0 flow to obtain Google Drive permission for creating/saving to the "Encrypz" folder
-        val bundle = LoopbackGoogleOAuthServer.authorizeViaLoopbackBrowser(
-            context = context,
-            loginHintEmail = cleanEmail.takeIf { it.contains("@") }
-        )
-        if (bundle != null && bundle.accessToken.isNotBlank()) {
-            val resolvedEmail = bundle.email?.takeIf { it.isNotBlank() } ?: cleanEmail
-            val folderId = try {
-                if (resolvedEmail.isNotBlank()) {
-                    findOrCreateEncrypzVaultFolder(context, resolvedEmail, bundle.accessToken)
-                } else {
-                    null
-                }
-            } catch (_: Exception) {
-                null
-            }
-            return@withContext DrivePermissionResult(
-                granted = true,
-                email = resolvedEmail,
-                folderId = folderId,
-                refreshToken = bundle.refreshToken ?: LoopbackGoogleOAuthServer.getSavedRefreshToken(context, resolvedEmail)
-            )
         }
 
         return@withContext DrivePermissionResult(
@@ -240,8 +237,8 @@ object GoogleDriveSyncManager {
             }
         }
 
-        // 4. Fallback to GMS recoverable intent only if Web OAuth is not configured
-        if (recoverableIntent != null && GoogleAuthConfig.CLIENT_ID.isBlank()) {
+        // Return native consent to the login screen; uploads never launch it.
+        if (recoverableIntent != null) {
             return@withContext TokenResolution.ConsentRequired(recoverableIntent)
         }
 

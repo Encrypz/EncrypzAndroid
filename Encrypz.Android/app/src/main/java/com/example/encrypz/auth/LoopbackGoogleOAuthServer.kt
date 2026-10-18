@@ -70,9 +70,8 @@ object LoopbackGoogleOAuthServer {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val cachedAccess = prefs.getString("$KEY_ACCESS_TOKEN_PREFIX$cleanEmail", null)
-            ?: prefs.getString("${KEY_ACCESS_TOKEN_PREFIX}default", null)
         val expiresAt = prefs.getLong("$KEY_EXPIRES_AT_PREFIX$cleanEmail", 0L)
-            .takeIf { it > 0L } ?: prefs.getLong("${KEY_EXPIRES_AT_PREFIX}default", 0L)
+
 
         if (!cachedAccess.isNullOrBlank() && now < expiresAt - 60_000L) {
             return true
@@ -80,7 +79,6 @@ object LoopbackGoogleOAuthServer {
         val refreshToken = prefs.getString("$KEY_REFRESH_TOKEN_PREFIX$cleanEmail", null)
             ?.takeIf { it.isNotBlank() }
             ?: fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
-            ?: prefs.getString("${KEY_REFRESH_TOKEN_PREFIX}default", null)
         return !refreshToken.isNullOrBlank()
     }
 
@@ -110,9 +108,8 @@ object LoopbackGoogleOAuthServer {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         val cachedAccess = prefs.getString("$KEY_ACCESS_TOKEN_PREFIX$cleanEmail", null)
-            ?: prefs.getString("${KEY_ACCESS_TOKEN_PREFIX}default", null)
         val expiresAt = prefs.getLong("$KEY_EXPIRES_AT_PREFIX$cleanEmail", 0L)
-            .takeIf { it > 0L } ?: prefs.getLong("${KEY_EXPIRES_AT_PREFIX}default", 0L)
+
         val now = System.currentTimeMillis()
 
         if (!cachedAccess.isNullOrBlank() && now < expiresAt - 60_000L) {
@@ -122,7 +119,6 @@ object LoopbackGoogleOAuthServer {
         val refreshToken = prefs.getString("$KEY_REFRESH_TOKEN_PREFIX$cleanEmail", null)
             ?.takeIf { it.isNotBlank() }
             ?: fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
-            ?: prefs.getString("${KEY_REFRESH_TOKEN_PREFIX}default", null)
 
         if (!refreshToken.isNullOrBlank()) {
             val refreshed = exchangeRefreshToken(refreshToken)
@@ -138,7 +134,6 @@ object LoopbackGoogleOAuthServer {
         val cleanEmail = email.trim().lowercase()
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getString("$KEY_REFRESH_TOKEN_PREFIX$cleanEmail", null)
-            ?: prefs.getString("${KEY_REFRESH_TOKEN_PREFIX}default", null)
     }
 
     fun saveTokenBundle(context: Context, email: String, bundle: OAuthTokenBundle) {

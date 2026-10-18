@@ -32,6 +32,17 @@ fun MainNavigation(
     val context = androidx.compose.ui.platform.LocalContext.current
     val vaultState by vaultViewModel.uiState.collectAsStateWithLifecycle()
 
+    val driveConsentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        vaultViewModel.onDriveConsentResult(context, result.resultCode == android.app.Activity.RESULT_OK)
+    }
+    androidx.compose.runtime.LaunchedEffect(vaultState.pendingDriveConsentIntent, isOnVaultScreen) {
+        if (!isOnVaultScreen) {
+            vaultState.pendingDriveConsentIntent?.let { driveConsentLauncher.launch(it) }
+        }
+    }
+
     androidx.compose.runtime.LaunchedEffect(Unit) {
         vaultViewModel.ensureLocalStorageLoaded(context)
     }
