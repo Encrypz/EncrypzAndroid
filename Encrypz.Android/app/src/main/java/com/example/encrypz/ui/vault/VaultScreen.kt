@@ -2284,7 +2284,7 @@ private fun PhotoGalleryGrid(
     FlowRow(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(top = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         maxItemsInEachRow = 3
@@ -2315,7 +2315,7 @@ private fun PhotoGalleryTile(
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(2.dp))
             .background(EncrypzInput)
             .clickable(onClick = onFileClick)
     ) {
@@ -2325,40 +2325,29 @@ private fun PhotoGalleryTile(
             isCompactThumbnail = false,
             modifier = Modifier.fillMaxSize()
         )
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
-                    )
-                )
-                .padding(start = 8.dp, end = 4.dp, top = 28.dp, bottom = 6.dp)
-        ) {
-            Text(
-                text = file.cleanFileName,
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(end = 28.dp)
-            )
-        }
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(5.dp),
+                .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             if (file.driveSyncState == DriveSyncState.SYNCED_TO_DRIVE) {
-                PhotoBadge(icon = Icons.Default.CloudDone, tint = EncrypzEmeraldBright)
+                PhotoBadge(
+                    icon = Icons.Default.CloudDone,
+                    tint = EncrypzEmeraldBright,
+                    background = Color.Black.copy(alpha = 0.58f)
+                )
             }
-            PhotoBadge(icon = Icons.Default.Lock, tint = EncrypzBlueBright)
+            PhotoBadge(
+                icon = Icons.Default.Lock,
+                tint = EncrypzBlueBright,
+                background = Color.Black.copy(alpha = 0.58f)
+            )
             Box {
                 PhotoBadge(
                     icon = Icons.Default.MoreVert,
                     tint = Color.White,
+                    background = Color.Black.copy(alpha = 0.58f),
                     onClick = { showMenu = true }
                 )
                 DropdownMenu(
@@ -2390,13 +2379,14 @@ private fun PhotoGalleryTile(
 private fun PhotoBadge(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     tint: Color,
+    background: Color = EncrypzSurface.copy(alpha = 0.86f),
     onClick: (() -> Unit)? = null
 ) {
     Box(
         modifier = Modifier
             .size(25.dp)
             .clip(CircleShape)
-            .background(EncrypzSurface.copy(alpha = 0.86f))
+            .background(background)
             .border(1.dp, EncrypzBorder, CircleShape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center
