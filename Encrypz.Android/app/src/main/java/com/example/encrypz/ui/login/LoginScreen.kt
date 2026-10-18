@@ -141,7 +141,8 @@ fun LoginScreen(
     onUnlockWithPin: ((String) -> Boolean)? = null,
     onSetupPinAfterFirstLogin: ((String) -> Boolean)? = null,
     onRequestDrivePermission: (() -> Unit)? = null,
-    onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null
+    onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null,
+    onNotify: ((String, Boolean) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var isGoogleSignedIn by rememberSaveable { mutableStateOf(initialGoogleSignedIn && connectedAccountEmail.isNotBlank()) }
@@ -162,6 +163,16 @@ fun LoginScreen(
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var activeInfoDialog by rememberSaveable { mutableStateOf<AuthInfoDialog?>(null) }
+
+    LaunchedEffect(errorMessage, infoMessage) {
+        errorMessage?.let { onNotify?.invoke(it, true) }
+        if (errorMessage == null) infoMessage?.let { onNotify?.invoke(it, false) }
+    }
+
+    LaunchedEffect(accountError, driveSetupError) {
+        accountError?.let { onNotify?.invoke(it, true) }
+        driveSetupError?.let { onNotify?.invoke(it, true) }
+    }
 
     // Keep activeEmail in sync if OAuth resolved/updated the email
     LaunchedEffect(connectedAccountEmail) {
@@ -463,78 +474,6 @@ fun LoginScreen(
                         )
 
                         Spacer(Modifier.height(20.dp))
-
-                        // Account Creation Redirect Info Banner (when email has no Encrypz account yet)
-                        AnimatedVisibility(
-                            visible = infoMessage != null && errorMessage == null,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            infoMessage?.let { msg ->
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 16.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = EncrypzSecondaryBg,
-                                    border = BorderStroke(1.dp, EncrypzBorderGlow)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Info,
-                                            contentDescription = null,
-                                            tint = EncrypzBlueBright,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(Modifier.width(10.dp))
-                                        Text(
-                                            text = msg,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = EncrypzText
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Error Alert (.auth-alert-error)
-                        AnimatedVisibility(
-                            visible = errorMessage != null,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            errorMessage?.let { msg ->
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 18.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = EncrypzDangerBg,
-                                    border = BorderStroke(1.dp, EncrypzDangerBorder)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Info,
-                                            contentDescription = null,
-                                            tint = EncrypzDangerLight,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(Modifier.width(10.dp))
-                                        Text(
-                                            text = msg,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = EncrypzDangerLight
-                                        )
-                                    }
-                                }
-                            }
-                        }
 
                         if (showPinSetupStepAfterFirstLogin) {
                             // Step shown right after First Login with Master Password to set up Quick-Unlock PIN

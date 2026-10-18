@@ -32,6 +32,19 @@ fun MainNavigation(
     val context = androidx.compose.ui.platform.LocalContext.current
     val vaultState by vaultViewModel.uiState.collectAsStateWithLifecycle()
 
+    androidx.compose.runtime.LaunchedEffect(vaultState.statusBannerMessage) {
+        vaultState.statusBannerMessage?.let { message ->
+            AppNotifications.show(
+                context,
+                message,
+                isError = message.contains("error", ignoreCase = true) ||
+                    message.contains("wrong", ignoreCase = true) ||
+                    message.contains("unable", ignoreCase = true) ||
+                    message.contains("failed", ignoreCase = true)
+            )
+        }
+    }
+
     val driveAccountLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -121,6 +134,7 @@ fun MainNavigation(
                     hasExistingVaultAccount = vaultState.hasExistingVaultAccount,
                     isCheckingAccountStatus = vaultState.isCheckingAccountStatus,
                     accountError = vaultState.statusBannerMessage,
+                    onNotify = { message, isError -> AppNotifications.show(context, message, isError) },
                     hasCompletedFirstLogin = vaultState.hasCompletedFirstLogin,
                     isPinSet = vaultState.isPinSet,
                     onGoogleSignInChanged = { signedIn, email ->
