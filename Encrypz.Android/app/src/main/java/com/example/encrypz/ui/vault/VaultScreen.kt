@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.RestoreFromTrash
@@ -165,7 +166,80 @@ private enum class VaultTab(val label: String) {
     PHOTOS("Photos"),
     FILES("Files"),
     RECYCLE_BIN("Recycle Bin"),
-    SECURITY_PROFILE("Security")
+    SECURITY_PROFILE("Security"),
+    NOTIFICATIONS("Notifications")
+}
+
+@Composable
+private fun NotificationsTabContent() {
+    val notifications = com.example.encrypz.AppNotifications.items
+
+    if (notifications.isEmpty()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Notifications,
+                contentDescription = null,
+                tint = EncrypzMuted,
+                modifier = Modifier.size(42.dp)
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "No notifications yet",
+                style = MaterialTheme.typography.titleMedium,
+                color = EncrypzText
+            )
+            Text(
+                text = "Important upload and download updates will appear here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = EncrypzMuted,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(notifications) { notification ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = EncrypzPanel,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, EncrypzGlassBorder)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (notification.isError) {
+                                Icons.Default.Close
+                            } else {
+                                Icons.Default.CloudDone
+                            },
+                            contentDescription = null,
+                            tint = if (notification.isError) EncrypzDangerLight else EncrypzEmeraldBright,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = notification.message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = EncrypzText
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -336,6 +410,7 @@ fun VaultScreen(
                                         VaultTab.FILES -> state.breadcrumbs.lastOrNull()?.name ?: "Files"
                                         VaultTab.RECYCLE_BIN -> "Recycle Bin"
                                         VaultTab.SECURITY_PROFILE -> "Security & Profile"
+                                        VaultTab.NOTIFICATIONS -> "Notifications"
                                     },
                                     style = MaterialTheme.typography.titleLarge,
                                     color = EncrypzText,
@@ -362,10 +437,23 @@ fun VaultScreen(
                                 tint = EncrypzEmeraldBright
                             )
                         }
-                        EncrypzStatusBadge(
-                            text = "AES-256",
-                            modifier = Modifier.padding(end = 2.dp)
-                        )
+                        BadgedBox(
+                            badge = {
+                                if (com.example.encrypz.AppNotifications.items.isNotEmpty()) {
+                                    Badge(containerColor = EncrypzBlue) {
+                                        Text(com.example.encrypz.AppNotifications.items.size.toString())
+                                    }
+                                }
+                            }
+                        ) {
+                            IconButton(onClick = { currentTab = VaultTab.NOTIFICATIONS }) {
+                                Icon(
+                                    imageVector = Icons.Default.Notifications,
+                                    contentDescription = "Notifications",
+                                    tint = EncrypzText
+                                )
+                            }
+                        }
                         IconButton(
                             onClick = {
                                 viewModel.lockVault()
@@ -517,61 +605,6 @@ fun VaultScreen(
                 .padding(innerPadding)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Status feedback banner
-                AnimatedVisibility(
-                    visible = state.statusBannerMessage != null,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    state.statusBannerMessage?.let { message ->
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            color = EncrypzSuccessBg,
-                            border = BorderStroke(1.dp, EncrypzSuccessBorder)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.VerifiedUser,
-                                        contentDescription = null,
-                                        tint = EncrypzEmeraldBright,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Text(
-                                        text = message,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = EncrypzEmeraldBright
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { viewModel.dismissBanner() },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Dismiss",
-                                        tint = EncrypzEmeraldBright,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
                 when (currentTab) {
                     VaultTab.PHOTOS -> MyVaultTabContent(
                         state = state,
@@ -624,6 +657,7 @@ fun VaultScreen(
                             onLogout()
                         }
                     )
+                    VaultTab.NOTIFICATIONS -> NotificationsTabContent()
                 }
             }
         }

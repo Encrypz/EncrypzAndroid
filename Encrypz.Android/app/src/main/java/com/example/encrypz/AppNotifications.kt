@@ -8,11 +8,18 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.compose.runtime.mutableStateListOf
+
+data class EncrypzNotification(
+    val message: String,
+    val isError: Boolean
+)
 
 object AppNotifications {
     private const val CHANNEL_ID = "encrypz_status"
     private const val CHANNEL_NAME = "Encrypz status"
     private var nextId = 0
+    val items = mutableStateListOf<EncrypzNotification>()
 
     fun createChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -34,6 +41,8 @@ object AppNotifications {
         ) return
 
         createChannel(context)
+        items.add(0, EncrypzNotification(message, isError))
+        if (items.size > 50) items.removeLast()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(if (isError) "Encrypz needs your attention" else "Encrypz")
