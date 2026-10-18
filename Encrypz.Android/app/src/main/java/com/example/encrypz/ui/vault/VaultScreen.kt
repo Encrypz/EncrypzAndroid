@@ -487,7 +487,7 @@ fun VaultScreen(
                         selected = currentTab == VaultTab.PHOTOS,
                         onClick = {
                             currentTab = VaultTab.PHOTOS
-                            viewModel.selectCategory(VaultCategoryFilter.PHOTOS)
+                            viewModel.selectCategory(VaultCategoryFilter.ALL)
                         },
                         icon = {
                             Icon(
@@ -1309,15 +1309,16 @@ private fun MyVaultTabContent(
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                VaultCategoryFilter.entries.filter { filter ->
-                    photosOnly && filter == VaultCategoryFilter.PHOTOS ||
-                        !photosOnly && filter != VaultCategoryFilter.PHOTOS
-                }.forEach { filter ->
+                (if (photosOnly) {
+                    listOf(VaultCategoryFilter.ALL)
+                } else {
+                    VaultCategoryFilter.entries.filter { it != VaultCategoryFilter.PHOTOS }
+                }).forEach { filter ->
                     val isSelected = state.selectedCategory == filter
                     Surface(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .clickable { onSelectCategory(filter) },
+                            .clickable { if (!photosOnly) onSelectCategory(filter) },
                         shape = RoundedCornerShape(20.dp),
                         color = if (isSelected) EncrypzBlue else EncrypzSurface,
                         border = BorderStroke(
@@ -1326,7 +1327,7 @@ private fun MyVaultTabContent(
                         )
                     ) {
                         Text(
-                            text = filter.label,
+                            text = if (photosOnly) "Photos & Videos" else filter.label,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp),
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
@@ -1421,13 +1422,19 @@ private fun MyVaultTabContent(
 
         // Files Section
         val visibleFiles = state.visibleFiles.filter { file ->
-            file.category == VaultCategoryFilter.PHOTOS == photosOnly
+            if (photosOnly) {
+                file.category == VaultCategoryFilter.PHOTOS ||
+                    file.category == VaultCategoryFilter.VIDEOS
+            } else {
+                file.category != VaultCategoryFilter.PHOTOS &&
+                    file.category != VaultCategoryFilter.VIDEOS
+            }
         }
         if (visibleFiles.isNotEmpty()) {
             item {
                 SectionHeaderWithBadge(
-                    title = if (state.selectedCategory == VaultCategoryFilter.PHOTOS) {
-                        "Photos"
+                    title = if (photosOnly) {
+                        "Photos & Videos"
                     } else {
                         "Encrypted Files"
                     },
@@ -1435,7 +1442,7 @@ private fun MyVaultTabContent(
                 )
             }
 
-            if (state.selectedCategory == VaultCategoryFilter.PHOTOS) {
+            if (photosOnly) {
                 item {
                     PhotoGalleryGrid(
                         files = visibleFiles,
