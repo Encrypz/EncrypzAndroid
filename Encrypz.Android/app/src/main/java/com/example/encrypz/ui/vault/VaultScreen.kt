@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.ScreenLockPortrait
@@ -161,7 +162,8 @@ import com.example.encrypz.ui.components.EncrypzStatusBadge
 data class VaultItem(val id: String, val name: String, val isFolder: Boolean)
 
 private enum class VaultTab(val label: String) {
-    MY_VAULT("My Vault"),
+    PHOTOS("Photos"),
+    FILES("Files"),
     RECYCLE_BIN("Recycle Bin"),
     SECURITY_PROFILE("Security")
 }
@@ -181,7 +183,7 @@ fun VaultScreen(
         clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
-    var currentTab by rememberSaveable { mutableStateOf(VaultTab.MY_VAULT) }
+    var currentTab by rememberSaveable { mutableStateOf(VaultTab.PHOTOS) }
     var showAddSheet by rememberSaveable { mutableStateOf(false) }
     var showCreateFolderDialog by rememberSaveable { mutableStateOf(false) }
     var showCreateNoteDialog by rememberSaveable { mutableStateOf(false) }
@@ -265,7 +267,7 @@ fun VaultScreen(
     }
 
     // Handle Android Back button inside nested folders
-    BackHandler(enabled = currentTab == VaultTab.MY_VAULT && state.breadcrumbs.size > 1) {
+    BackHandler(enabled = (currentTab == VaultTab.PHOTOS || currentTab == VaultTab.FILES) && state.breadcrumbs.size > 1) {
         viewModel.navigateUp()
     }
 
@@ -297,7 +299,7 @@ fun VaultScreen(
             ) {
                 TopAppBar(
                     navigationIcon = {
-                        if (currentTab == VaultTab.MY_VAULT && state.breadcrumbs.size > 1) {
+                        if ((currentTab == VaultTab.PHOTOS || currentTab == VaultTab.FILES) && state.breadcrumbs.size > 1) {
                             IconButton(onClick = { viewModel.navigateUp() }) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -330,7 +332,8 @@ fun VaultScreen(
                             ) {
                                 Text(
                                     text = when (currentTab) {
-                                        VaultTab.MY_VAULT -> state.breadcrumbs.lastOrNull()?.name ?: "My Vault"
+                                        VaultTab.PHOTOS -> state.breadcrumbs.lastOrNull()?.name ?: "Photos"
+                                        VaultTab.FILES -> state.breadcrumbs.lastOrNull()?.name ?: "Files"
                                         VaultTab.RECYCLE_BIN -> "Recycle Bin"
                                         VaultTab.SECURITY_PROFILE -> "Security & Profile"
                                     },
@@ -393,15 +396,40 @@ fun VaultScreen(
                     tonalElevation = 0.dp
                 ) {
                     NavigationBarItem(
-                        selected = currentTab == VaultTab.MY_VAULT,
-                        onClick = { currentTab = VaultTab.MY_VAULT },
+                        selected = currentTab == VaultTab.PHOTOS,
+                        onClick = {
+                            currentTab = VaultTab.PHOTOS
+                            viewModel.selectCategory(VaultCategoryFilter.PHOTOS)
+                        },
                         icon = {
                             Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "My Vault"
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "Photos"
                             )
                         },
-                        label = { Text("My Vault") },
+                        label = { Text("Photos") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = EncrypzBlue,
+                            selectedTextColor = EncrypzBlue,
+                            indicatorColor = EncrypzSecondaryBg,
+                            unselectedIconColor = EncrypzMuted,
+                            unselectedTextColor = EncrypzMuted
+                        )
+                    )
+
+                    NavigationBarItem(
+                        selected = currentTab == VaultTab.FILES,
+                        onClick = {
+                            currentTab = VaultTab.FILES
+                            viewModel.selectCategory(VaultCategoryFilter.ALL)
+                        },
+                        icon = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
+                                contentDescription = "Files"
+                            )
+                        },
+                        label = { Text("Files") },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = EncrypzBlue,
                             selectedTextColor = EncrypzBlue,
@@ -466,7 +494,7 @@ fun VaultScreen(
             }
         },
         floatingActionButton = {
-            if (currentTab == VaultTab.MY_VAULT) {
+            if (currentTab == VaultTab.PHOTOS || currentTab == VaultTab.FILES) {
                 ExtendedFloatingActionButton(
                     onClick = { showAddSheet = true },
                     shape = RoundedCornerShape(100.dp),
@@ -545,11 +573,27 @@ fun VaultScreen(
                 }
 
                 when (currentTab) {
-                    VaultTab.MY_VAULT -> MyVaultTabContent(
+                    VaultTab.PHOTOS -> MyVaultTabContent(
                         state = state,
                         viewModel = viewModel,
+                        photosOnly = true,
                         onSearchQueryChange = viewModel::updateSearchQuery,
                         onSelectCategory = viewModel::selectCategory,
+                        onToggleViewMode = viewModel::toggleViewMode,
+                        onBreadcrumbClick = viewModel::navigateToBreadcrumb,
+                        onFolderClick = viewModel::navigateToFolder,
+                        onFolderMoreClick = { selectedFolderForDetails = it },
+                        onFileClick = { selectedFileForDetails = it },
+                        onAddClick = { showAddSheet = true }
+                    )
+                    VaultTab.FILES -> MyVaultTabContent(
+                        state = state,
+                        viewModel = viewModel,
+                        photosOnly = false,
+                        onSearchQueryChange = viewModel::updateSearchQuery,
+                        onSelectCategory = { category ->
+                            if (category != VaultCategoryFilter.PHOTOS) viewModel.selectCategory(category)
+                        },
                         onToggleViewMode = viewModel::toggleViewMode,
                         onBreadcrumbClick = viewModel::navigateToBreadcrumb,
                         onFolderClick = viewModel::navigateToFolder,
@@ -1217,6 +1261,7 @@ fun VaultScreen(
 private fun MyVaultTabContent(
     state: VaultUiState,
     viewModel: VaultViewModel,
+    photosOnly: Boolean,
     onSearchQueryChange: (String) -> Unit,
     onSelectCategory: (VaultCategoryFilter) -> Unit,
     onToggleViewMode: () -> Unit,
@@ -1310,7 +1355,10 @@ private fun MyVaultTabContent(
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                VaultCategoryFilter.entries.forEach { filter ->
+                VaultCategoryFilter.entries.filter { filter ->
+                    photosOnly && filter == VaultCategoryFilter.PHOTOS ||
+                        !photosOnly && filter != VaultCategoryFilter.PHOTOS
+                }.forEach { filter ->
                     val isSelected = state.selectedCategory == filter
                     Surface(
                         modifier = Modifier
@@ -1418,7 +1466,9 @@ private fun MyVaultTabContent(
         }
 
         // Files Section
-        val visibleFiles = state.visibleFiles
+        val visibleFiles = state.visibleFiles.filter { file ->
+            file.category == VaultCategoryFilter.PHOTOS == photosOnly
+        }
         if (visibleFiles.isNotEmpty()) {
             item {
                 SectionHeaderWithBadge(
@@ -2441,19 +2491,43 @@ private fun DeletedVaultItemCard(
                     color = EncrypzSubtleText
                 )
             }
-            IconButton(onClick = onRestore) {
-                Icon(
-                    imageVector = Icons.Default.RestoreFromTrash,
-                    contentDescription = "Restore",
-                    tint = EncrypzEmeraldBright
-                )
-            }
-            IconButton(onClick = onDeleteForever) {
-                Icon(
-                    imageVector = Icons.Default.DeleteForever,
-                    contentDescription = "Delete Forever",
-                    tint = EncrypzDangerLight
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = onRestore,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    shape = RoundedCornerShape(100.dp),
+                    border = BorderStroke(1.dp, EncrypzBorderGlow),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = EncrypzSecondaryBg,
+                        contentColor = EncrypzBlueBright
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.RestoreFromTrash,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Restore", style = MaterialTheme.typography.labelSmall)
+                }
+                OutlinedButton(
+                    onClick = onDeleteForever,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    shape = RoundedCornerShape(100.dp),
+                    border = BorderStroke(1.dp, EncrypzDangerBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = EncrypzDangerBg,
+                        contentColor = EncrypzDangerLight
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteForever,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Delete", style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
     }
