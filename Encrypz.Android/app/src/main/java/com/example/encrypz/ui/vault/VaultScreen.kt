@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -86,6 +87,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -1419,12 +1422,24 @@ private fun MyVaultTabContent(
         if (visibleFiles.isNotEmpty()) {
             item {
                 SectionHeaderWithBadge(
-                    title = "Encrypted Files",
+                    title = if (state.selectedCategory == VaultCategoryFilter.PHOTOS) {
+                        "Photos"
+                    } else {
+                        "Encrypted Files"
+                    },
                     count = visibleFiles.size
                 )
             }
 
-            if (state.viewMode == VaultViewMode.GRID) {
+            if (state.selectedCategory == VaultCategoryFilter.PHOTOS) {
+                item {
+                    PhotoGalleryGrid(
+                        files = visibleFiles,
+                        viewModel = viewModel,
+                        onFileClick = onFileClick
+                    )
+                }
+            } else if (state.viewMode == VaultViewMode.GRID) {
                 item {
                     FlowRow(
                         modifier = Modifier
@@ -2197,6 +2212,7 @@ private fun FileGridCard(
                                 modifier = Modifier.size(12.dp)
                             )
                         }
+
                     }
                     Box(
                         modifier = Modifier
@@ -2245,6 +2261,141 @@ private fun FileGridCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PhotoGalleryGrid(
+    files: List<VaultFileEntry>,
+    viewModel: VaultViewModel,
+    onFileClick: (VaultFileEntry) -> Unit
+) {
+    FlowRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        maxItemsInEachRow = 3
+    ) {
+        files.forEach { file ->
+            PhotoGalleryTile(
+                file = file,
+                viewModel = viewModel,
+                onFileClick = { onFileClick(file) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        repeat((3 - files.size % 3) % 3) {
+            Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun PhotoGalleryTile(
+    file: VaultFileEntry,
+    viewModel: VaultViewModel,
+    onFileClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(EncrypzInput)
+            .clickable(onClick = onFileClick)
+    ) {
+        VaultFileCardPreviewBox(
+            file = file,
+            viewModel = viewModel,
+            isCompactThumbnail = false,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                    )
+                )
+                .padding(start = 8.dp, end = 4.dp, top = 28.dp, bottom = 6.dp)
+        ) {
+            Text(
+                text = file.cleanFileName,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 28.dp)
+            )
+        }
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (file.driveSyncState == DriveSyncState.SYNCED_TO_DRIVE) {
+                PhotoBadge(icon = Icons.Default.CloudDone, tint = EncrypzEmeraldBright)
+            }
+            PhotoBadge(icon = Icons.Default.Lock, tint = EncrypzBlueBright)
+            Box {
+                PhotoBadge(
+                    icon = Icons.Default.MoreVert,
+                    tint = Color.White,
+                    onClick = { showMenu = true }
+                )
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false },
+                    modifier = Modifier.background(EncrypzPanel)
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Open preview", color = EncrypzText) },
+                        onClick = {
+                            showMenu = false
+                            onFileClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("File details", color = EncrypzText) },
+                        onClick = {
+                            showMenu = false
+                            onFileClick()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhotoBadge(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    onClick: (() -> Unit)? = null
+) {
+    Box(
+        modifier = Modifier
+            .size(25.dp)
+            .clip(CircleShape)
+            .background(EncrypzSurface.copy(alpha = 0.86f))
+            .border(1.dp, EncrypzBorder, CircleShape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(14.dp)
+        )
     }
 }
 
