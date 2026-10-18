@@ -239,6 +239,10 @@ class VaultViewModel : ViewModel() {
     ) {
         val cleanEmail = email.trim()
         if (cleanEmail.isEmpty()) return
+        if (!_uiState.value.connectedGoogleEmail.equals(cleanEmail, ignoreCase = true)) {
+            _uiState.update { it.copy(isRequestingDrivePermission = false,
+                pendingDriveAuthorization = null, driveAuthorizationEmail = null, driveSetupError = null) }
+        }
         val emailKey = cleanEmail.lowercase(Locale.ROOT)
         var localRecord: MongoVaultUserRecord? = userAuthRecords[emailKey]
         if (context != null) {
@@ -417,13 +421,21 @@ class VaultViewModel : ViewModel() {
         _uiState.update { it.copy(isRequestingDrivePermission = false,
             pendingDriveAuthorization = null, driveAuthorizationEmail = null) }
         if (!_uiState.value.connectedGoogleEmail.equals(email, ignoreCase = true)) return
-        if (granted && data != null) {
+        // Google can return a structured API error even when the activity was cancelled.
+        if (data != null) {
             requestGoogleDrivePermission(context, email, authorizationData = data)
         } else {
-            val message = "Google Drive permission was not granted. Files remain encrypted on this device."
+            val message = if (granted) "Google returned no authorization result. Try Allow Google Drive access again."
+                else "Google Drive setup was cancelled or closed. Tap Allow Google Drive access in Security to try again."
             _uiState.update { it.copy(isDrivePermissionGranted = false,
                 driveSetupError = message, statusBannerMessage = message) }
         }
+    }
+
+    fun onDriveAuthorizationLaunchFailed(message: String) {
+        _uiState.update { it.copy(isRequestingDrivePermission = false,
+            pendingDriveAuthorization = null, driveAuthorizationEmail = null,
+            isDrivePermissionGranted = false, driveSetupError = message, statusBannerMessage = message) }
     }
 
     fun disconnectGoogleAccount() {

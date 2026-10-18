@@ -74,6 +74,7 @@ object GoogleAuthConfig {
      */
     @Suppress("DEPRECATION")
     fun extractSelectedEmail(context: Context, resultCode: Int, data: Intent?): String? {
+        if (resultCode != Activity.RESULT_OK) return null
         // 1. Check AccountManager.KEY_ACCOUNT_NAME from AccountPicker / AccountManager
         val pickerEmail = data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
         if (!pickerEmail.isNullOrBlank()) {

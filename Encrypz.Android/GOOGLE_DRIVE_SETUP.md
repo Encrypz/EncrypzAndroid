@@ -19,3 +19,5 @@ A failed setup now displays the actual authorization or Drive API error. Error 1
 No live account upload was verified during this build: no Android device was connected.
 
 Reference: https://developer.android.com/identity/authorization
+
+First launch now starts account selection and Drive authorization automatically. The Security tab includes Allow Google Drive access, persistent error details, and Check access & sync files after authorization. Google may reuse an existing grant without showing another popup. Cancelled results containing error data are parsed so the actual Google failure is displayed. Install updates over the existing app to preserve local vault data.

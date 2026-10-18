@@ -34,6 +34,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -163,6 +167,7 @@ private enum class VaultTab(val label: String) {
 @Composable
 fun VaultScreen(
     onLogout: () -> Unit,
+    onRequestDrivePermission: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: VaultViewModel = viewModel()
 ) {
@@ -561,6 +566,7 @@ fun VaultScreen(
 
                     VaultTab.SECURITY_PROFILE -> SecurityProfileTabContent(
                         state = state,
+                        onRequestDrivePermission = onRequestDrivePermission,
                         onToggleScreenshotProtection = viewModel::setScreenshotProtection,
                         onConfigurePinClick = { showPinSetupDialog = true },
                         onRemovePinClick = { viewModel.removeUnlockPin(context) },
@@ -1618,6 +1624,7 @@ private fun RecycleBinTabContent(
 @Composable
 private fun SecurityProfileTabContent(
     state: VaultUiState,
+    onRequestDrivePermission: () -> Unit,
     onToggleScreenshotProtection: (Boolean) -> Unit,
     onConfigurePinClick: () -> Unit,
     onRemovePinClick: () -> Unit,
@@ -1630,60 +1637,75 @@ private fun SecurityProfileTabContent(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Featured Cloud & Cryptographic Status Card matching encrypz.com .card-featured
         item {
-            EncrypzBentoCard(
-                modifier = Modifier.fillMaxWidth(),
-                isFeatured = true
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        EncrypzStatusBadge(text = "Google Drive Connected")
-                        Text(
-                            text = "AES-256-GCM",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                color = EncrypzBlueBright
-                            )
-                        )
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        EncrypzCardIconBox(
-                            icon = Icons.Default.CloudDone,
-                            size = 46.dp
-                        )
-                        Column {
-                            Text(
-                                text = state.connectedGoogleEmail.ifBlank { "Google Drive Account Connected" },
-                                style = MaterialTheme.typography.titleMedium,
-                                color = EncrypzText
-                            )
-                            Text(
-                                text = "Google Drive 'Encrypz' Folder Vault",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = EncrypzMuted
-                            )
+            EncrypzBentoCard(modifier = Modifier.fillMaxWidth(), isFeatured = true) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        EncrypzCardIconBox(icon = Icons.Outlined.CloudSync, size = 46.dp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Google Drive backup", style = MaterialTheme.typography.titleMedium,
+                                color = EncrypzText)
+                            Text(state.connectedGoogleEmail.ifBlank { "Connect your Google account" },
+                                style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
                         }
                     }
-
-                    EncrypzSpecsBox(
-                        specs = listOf(
-                            "Encrypted Files" to "${state.activeFileCount} files (${formatFileSize(state.totalEncryptedBytes)})",
-                            "Encrypted Folders" to "${state.activeFolderCount} folders",
-                            "Cipher Suite" to "AES-256-GCM (128-bit Tag)",
-                            "Key Derivation" to "Argon2id / PBKDF2-SHA256",
-                            "OAuth Client ID" to "${state.oauthClientId.take(18)}...",
-                            "OAuth Secret" to state.oauthClientSecretMasked
-                        )
-                    )
+                    HorizontalDivider(color = EncrypzBorder)
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(if (state.isDrivePermissionGranted) Icons.Outlined.VerifiedUser else Icons.Outlined.CloudOff,
+                            contentDescription = null, modifier = Modifier.size(22.dp),
+                            tint = if (state.isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzBlueBright)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(when {
+                                state.isRequestingDrivePermission -> "Setting up Google Drive..."
+                                state.isDrivePermissionGranted -> "Automatic backup is ready"
+                                else -> "Drive access required"
+                            }, style = MaterialTheme.typography.labelLarge, color = EncrypzText)
+                            Text("Files are encrypted on your device and saved automatically to Encrypz in My Drive.",
+                                style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
+                        }
+                    }
+                    state.driveSetupError?.let { error ->
+                        Text(error, style = MaterialTheme.typography.bodySmall, color = EncrypzDanger,
+                            modifier = Modifier.fillMaxWidth()
+                                .background(EncrypzDangerBg, RoundedCornerShape(12.dp)).padding(12.dp))
+                    }
+                    Button(
+                        onClick = onRequestDrivePermission,
+                        enabled = !state.isRequestingDrivePermission,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue,
+                            contentColor = Color.White)
+                    ) {
+                        if (state.isRequestingDrivePermission) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = EncrypzBlueBright)
+                        } else {
+                            Icon(Icons.Outlined.VerifiedUser, contentDescription = null, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text(when {
+                            state.isRequestingDrivePermission -> "Connecting..."
+                            state.isDrivePermissionGranted -> "Check access & sync files"
+                            else -> "Allow Google Drive access"
+                        }, style = MaterialTheme.typography.labelLarge)
+                    }
+                    Text("Google asks for consent only when access is needed. You can retry here if setup is cancelled.",
+                        style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = null,
+                            modifier = Modifier.size(18.dp), tint = EncrypzMuted)
+                        Text("My Drive / Encrypz", style = MaterialTheme.typography.labelMedium, color = EncrypzMuted)
+                    }
+                    EncrypzSpecsBox(specs = listOf(
+                        "Saved to Drive" to "${state.syncedToDriveCount} files",
+                        "Encrypted on device" to "${state.activeFileCount} files",
+                        "Encryption" to "AES-256-GCM"
+                    ))
                 }
             }
         }

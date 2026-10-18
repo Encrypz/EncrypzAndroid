@@ -32,6 +32,35 @@ fun MainNavigation(
     val context = androidx.compose.ui.platform.LocalContext.current
     val vaultState by vaultViewModel.uiState.collectAsStateWithLifecycle()
 
+    val driveAccountLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val email = com.example.encrypz.auth.GoogleAuthConfig.extractSelectedEmail(
+            context, result.resultCode, result.data
+        )
+        if (email != null) {
+            vaultViewModel.connectGoogleAccount(email, context, requestDrivePermissionIfNeeded = true)
+        } else {
+            vaultViewModel.onDriveAuthorizationLaunchFailed("Choose a Google account to enable automatic Drive backup.")
+        }
+    }
+    val requestDriveAccess: () -> Unit = {
+        val email = vaultState.connectedGoogleEmail.ifBlank {
+            com.example.encrypz.auth.GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty()
+        }
+        if (email.isBlank()) {
+            try {
+                driveAccountLauncher.launch(com.example.encrypz.auth.GoogleAuthConfig.createGoogleAccountChooserIntent())
+            } catch (ex: Exception) {
+                vaultViewModel.onDriveAuthorizationLaunchFailed("Could not open Google account selection: ${ex.localizedMessage}")
+            }
+        } else if (!vaultState.isGoogleConnected) {
+            vaultViewModel.connectGoogleAccount(email, context, requestDrivePermissionIfNeeded = true)
+        } else {
+            vaultViewModel.requestGoogleDrivePermission(context, email)
+        }
+    }
+
     val driveAuthorizationLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
@@ -45,8 +74,8 @@ fun MainNavigation(
                 driveAuthorizationLauncher.launch(
                     androidx.activity.result.IntentSenderRequest.Builder(pending.intentSender).build()
                 )
-            } catch (_: Exception) {
-                vaultViewModel.onDriveAuthorizationResult(context, null, false)
+            } catch (ex: Exception) {
+                vaultViewModel.onDriveAuthorizationLaunchFailed("Could not open Google's permission screen: ${ex.localizedMessage}")
             }
         }
     }
@@ -64,6 +93,11 @@ fun MainNavigation(
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         vaultViewModel.ensureLocalStorageLoaded(context)
+        // This marker is excluded from backup, so a fresh install starts setup again.
+        val firstLaunch = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            java.io.File(context.noBackupFilesDir, "drive_setup_started_v1").createNewFile()
+        }
+        if (firstLaunch) requestDriveAccess()
     }
 
     NavDisplay(
@@ -99,9 +133,7 @@ fun MainNavigation(
                             vaultViewModel.disconnectGoogleAccount()
                         }
                     },
-                    onRequestDrivePermission = {
-                        vaultViewModel.requestGoogleDrivePermission(context)
-                    },
+                    onRequestDrivePermission = requestDriveAccess,
                     onUnlockWithPassword = { password, isCreatingVault ->
                         vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
                     },
@@ -119,6 +151,7 @@ fun MainNavigation(
             entry<Vault> {
                 VaultScreen(
                     viewModel = vaultViewModel,
+                    onRequestDrivePermission = requestDriveAccess,
                     onLogout = {
                         isOnVaultScreen = false
                     }
