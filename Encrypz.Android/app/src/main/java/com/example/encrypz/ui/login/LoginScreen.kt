@@ -797,52 +797,45 @@ fun LoginScreen(
                             if (!isCreatingVault && usePinMode && hasCompletedFirstLogin && isPinSet) {
                                 // UNLOCK WITH PIN UI (Available after first login)
                                 Text(
-                                    text = "Quick-Unlock PIN",
-                                    style = MaterialTheme.typography.labelMedium,
+                                    text = "Enter your PIN",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
                                     color = EncrypzMuted,
-                                    modifier = Modifier.padding(bottom = 6.dp)
+                                    modifier = Modifier.fillMaxWidth()
                                 )
-                                OutlinedTextField(
-                                    value = pinInput,
-                                    onValueChange = { value ->
-                                        val digits = value.filter { it.isDigit() }.take(6)
-                                        pinInput = digits
-                                        errorMessage = null
-                                    },
-                                    placeholder = {
-                                        Text("Enter 4–6 digit PIN", color = EncrypzSubtleText)
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.Dialpad,
-                                            contentDescription = null,
-                                            tint = EncrypzBlueBright,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    visualTransformation = PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(
-                                        keyboardType = KeyboardType.NumberPassword,
-                                        imeAction = ImeAction.Done
-                                    ),
-                                    keyboardActions = KeyboardActions(
-                                        onDone = { handlePinUnlock() }
-                                    ),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedContainerColor = EncrypzInput,
-                                        unfocusedContainerColor = EncrypzInput,
-                                        focusedBorderColor = EncrypzBlue,
-                                        unfocusedBorderColor = EncrypzInputBorder,
-                                        focusedTextColor = EncrypzText,
-                                        unfocusedTextColor = EncrypzText,
-                                        cursorColor = EncrypzBlue
-                                    )
+                                Text(
+                                    text = "Use the keypad below to unlock your vault",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = EncrypzSubtleText,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 4.dp)
                                 )
 
-                                Spacer(Modifier.height(14.dp))
+                                Spacer(Modifier.height(18.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    repeat(6) { index ->
+                                        Box(
+                                            modifier = Modifier
+                                                .padding(horizontal = 7.dp)
+                                                .size(14.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (index < pinInput.length) {
+                                                        EncrypzBlueBright
+                                                    } else {
+                                                        EncrypzInputBorder
+                                                    }
+                                                )
+                                        )
+                                    }
+                                }
 
                                 // Interactive Numeric PIN Pad for fast one-handed unlock
                                 PinNumberPad(
@@ -864,7 +857,7 @@ fun LoginScreen(
                                     }
                                 )
 
-                                Spacer(Modifier.height(18.dp))
+                                Spacer(Modifier.height(16.dp))
 
                                 Button(
                                     onClick = handlePinUnlock,
@@ -880,6 +873,12 @@ fun LoginScreen(
                                         disabledContentColor = Color.White.copy(alpha = 0.5f)
                                     )
                                 ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
                                     Text(
                                         text = "Unlock with PIN",
                                         style = MaterialTheme.typography.labelLarge.copy(
@@ -913,7 +912,7 @@ fun LoginScreen(
                                     )
                                     Spacer(Modifier.width(8.dp))
                                     Text(
-                                        text = "Use Master Password instead",
+                                        text = "Use master password instead",
                                         style = MaterialTheme.typography.labelMedium
                                     )
                                 }
