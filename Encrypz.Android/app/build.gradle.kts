@@ -20,7 +20,7 @@ android {
     namespace = "com.example.encrypz"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.encrypz"
+        applicationId = "com.encrypz.vault"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

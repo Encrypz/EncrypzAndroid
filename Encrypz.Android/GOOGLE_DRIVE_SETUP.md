@@ -6,13 +6,13 @@ A Web OAuth client ID and secret do not configure Android authorization.
 In the Google Cloud project used by this app:
 
 1. Enable the Google Drive API.
-2. Configure an Android OAuth client with package `com.example.encrypz` and this APK signing SHA-1:
+2. Configure an Android OAuth client with package `com.encrypz.vault` and this APK signing SHA-1:
    `38:C0:58:6C:65:10:A2:FB:3C:20:29:E1:0B:D7:4F:88:BC:DD:8F:DB`.
 3. Configure the consent screen. If the app is in Testing, add the Google account as a test user.
 
 The fingerprint above comes from `:app:signingReport`; both current build variants use the local debug signing key. Register the appropriate fingerprint again if the signing key changes.
 
-Install the rebuilt APK over the existing app, then log in. Allow Drive access when Google asks. The app verifies or creates `Encrypz` in My Drive, retries queued encrypted files after unlock, and automatically uploads new files. No per-file permission prompt or Save button is needed.
+Install the rebuilt APK, then log in. The application ID is now `com.encrypz.vault`, so it installs separately from `com.example.encrypz` and does not inherit that app's local vault data. Allow Drive access when Google asks. The app verifies or creates `Encrypz` in My Drive, retries queued encrypted files after unlock, and automatically uploads new files. No per-file permission prompt or Save button is needed.
 
 A failed setup now displays the actual authorization or Drive API error. Error 10 indicates Android OAuth configuration needs checking. Drive API errors such as API disabled, insufficient permissions, quota exceeded, and network failures are displayed rather than reported as success.
 
@@ -20,4 +20,4 @@ No live account upload was verified during this build: no Android device was con
 
 Reference: https://developer.android.com/identity/authorization
 
-First launch now starts account selection and Drive authorization automatically. The Security tab includes Allow Google Drive access, persistent error details, and Check access & sync files after authorization. Google may reuse an existing grant without showing another popup. Cancelled results containing error data are parsed so the actual Google failure is displayed. Install updates over the existing app to preserve local vault data.
+First launch now starts account selection and Drive authorization automatically. The Security tab includes Allow Google Drive access, persistent error details, and Check access & sync files after authorization. Google may reuse an existing grant without showing another popup. Cancelled results containing error data are parsed so the actual Google failure is displayed. Updates to `com.encrypz.vault` can be installed over the same app. Keep the old `com.example.encrypz` installation until its locally stored files are safely exported or synced.
