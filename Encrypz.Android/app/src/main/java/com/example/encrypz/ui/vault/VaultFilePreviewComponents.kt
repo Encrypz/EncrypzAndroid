@@ -583,46 +583,6 @@ fun VaultFilePreviewSection(
                     )
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    TextButton(
-                        onClick = { onCopyText(decryptedText) },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy",
-                            tint = EncrypzBlueBright,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = "Copy",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = EncrypzBlueBright
-                        )
-                    }
-
-                    TextButton(
-                        onClick = onOpenFullScreen,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Fullscreen,
-                            contentDescription = "Full Screen Preview",
-                            tint = EncrypzBlueBright,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = "Expand",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = EncrypzBlueBright
-                        )
-                    }
-                }
             }
 
             Spacer(Modifier.height(10.dp))
@@ -763,61 +723,16 @@ fun VaultFileFullScreenDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = EncrypzBlack
+            color = Color.Black
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Top Bar
-                Surface(
-                    color = EncrypzPanel,
-                    border = BorderStroke(1.dp, EncrypzBorder)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = file.cleanFileName,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = EncrypzText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${formatFileSize(file.sizeBytes)} · Decrypted in RAM (AES-256-GCM)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = EncrypzEmeraldBright
-                            )
-                        }
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close Preview",
-                                tint = EncrypzText
-                            )
-                        }
-                    }
-                }
-
-                // Content Area
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+            Box(modifier = Modifier.fillMaxSize()) {
                     when {
                         imageBitmap != null -> {
                             Image(
                                 bitmap = imageBitmap,
                                 contentDescription = file.cleanFileName,
                                 modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(12.dp)),
+                                    .fillMaxSize(),
                                 contentScale = ContentScale.Fit
                             )
                         }
@@ -861,44 +776,37 @@ fun VaultFileFullScreenDialog(
                             }
                         }
                     }
-                }
-
-                // Bottom Action Bar
                 Surface(
-                    color = EncrypzPanel,
-                    border = BorderStroke(1.dp, EncrypzBorder)
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 20.dp, start = 16.dp),
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.58f)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Button(
-                            onClick = { onCopyText(decryptedText) },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = EncrypzBlue,
-                                contentColor = EncrypzText
-                            )
-                        ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Copy Decrypted Content")
-                        }
-                        Button(
-                            onClick = onDismiss,
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = EncrypzSurface,
-                                contentColor = EncrypzText
-                            )
-                        ) {
-                            Text("Done")
-                        }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Preview",
+                            tint = Color.White
+                        )
                     }
                 }
+                Text(
+                    text = file.cleanFileName,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.82f))
+                            )
+                        )
+                        .padding(horizontal = 20.dp, vertical = 22.dp),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
