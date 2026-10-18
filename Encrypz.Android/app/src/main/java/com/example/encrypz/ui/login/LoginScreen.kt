@@ -128,6 +128,7 @@ fun LoginScreen(
     initialGoogleSignedIn: Boolean = false,
     connectedAccountEmail: String = "",
     isDrivePermissionGranted: Boolean = false,
+    driveSetupError: String? = null,
     isRequestingDrivePermission: Boolean = false,
     hasExistingVaultAccount: Boolean = false,
     isCheckingAccountStatus: Boolean = false,
@@ -810,7 +811,8 @@ fun LoginScreen(
                                         )
                                         Text(
                                             text = when {
-                                                isDrivePermissionGranted -> "Google Drive 'Encrypz' folder permission granted"
+                                                driveSetupError != null -> driveSetupError
+                                                isDrivePermissionGranted -> "Google Drive 'Encrypz' folder ready for automatic uploads"
                                                 isRequestingDrivePermission -> "Requesting Google Drive 'Encrypz' folder permission..."
                                                 else -> "Google Drive 'Encrypz' folder permission required"
                                             },

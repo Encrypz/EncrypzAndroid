@@ -10,6 +10,23 @@ import org.junit.Test
 class VaultViewModelTest {
 
     @Test
+    fun importingEncryptedFile_doesNotClaimItWasSavedToDrive() {
+        val model = VaultViewModel()
+        model.connectGoogleAccount("import_test@example.com")
+        assertTrue(model.unlockWithMasterPassword("ImportTest#MasterPassword2026", isCreatingNewVault = true))
+        model.encryptAndAddFile("source.txt", "encrypted import".encodeToByteArray())
+        val original = model.uiState.value.files.first()
+
+        model.encryptAndAddFile("imported.txt.enc", original.encryptedPayload)
+        val imported = model.uiState.value.files.first()
+
+        assertEquals(DriveSyncState.LOCAL_ENCRYPTED, imported.driveSyncState)
+        assertEquals(null, imported.driveFileId)
+        assertTrue(original.encryptedPayload.contentEquals(imported.encryptedPayload))
+        assertEquals("encrypted import", model.decryptFilePreview(imported))
+    }
+
+    @Test
     fun vaultCrypto_encryptAndDecryptPayload_roundTripsPlaintext() {
         val vaultKey = VaultCrypto.generateVaultKey()
         val plaintext = "Zero-knowledge AES-256-GCM test payload".encodeToByteArray()

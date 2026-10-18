@@ -32,6 +32,25 @@ fun MainNavigation(
     val context = androidx.compose.ui.platform.LocalContext.current
     val vaultState by vaultViewModel.uiState.collectAsStateWithLifecycle()
 
+    val driveAuthorizationLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        vaultViewModel.onDriveAuthorizationResult(context, result.data,
+            result.resultCode == android.app.Activity.RESULT_OK)
+    }
+    androidx.compose.runtime.LaunchedEffect(vaultState.pendingDriveAuthorization) {
+        vaultState.pendingDriveAuthorization?.let { pending ->
+            vaultViewModel.consumeDriveAuthorization()
+            try {
+                driveAuthorizationLauncher.launch(
+                    androidx.activity.result.IntentSenderRequest.Builder(pending.intentSender).build()
+                )
+            } catch (_: Exception) {
+                vaultViewModel.onDriveAuthorizationResult(context, null, false)
+            }
+        }
+    }
+
     val driveConsentLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -63,6 +82,7 @@ fun MainNavigation(
                     initialGoogleSignedIn = vaultState.isGoogleConnected,
                     connectedAccountEmail = vaultState.connectedGoogleEmail,
                     isDrivePermissionGranted = vaultState.isDrivePermissionGranted,
+                    driveSetupError = vaultState.driveSetupError,
                     isRequestingDrivePermission = vaultState.isRequestingDrivePermission,
                     hasExistingVaultAccount = vaultState.hasExistingVaultAccount,
                     isCheckingAccountStatus = vaultState.isCheckingAccountStatus,

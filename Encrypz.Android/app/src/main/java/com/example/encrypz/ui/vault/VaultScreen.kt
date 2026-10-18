@@ -714,47 +714,11 @@ fun VaultScreen(
                     )
                 )
 
-                // Google Drive Save (.enc) + Export Decrypted Row
+                // Drive upload is automatic; decrypted export remains an explicit action.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.saveFileToGoogleDrive(
-                                context = context,
-                                fileId = file.id,
-                                forceDocumentSaver = false
-                            )
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp),
-                        shape = RoundedCornerShape(100.dp),
-                        border = BorderStroke(1.dp, EncrypzSuccessBorder),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = EncrypzSuccessBg,
-                            contentColor = EncrypzEmeraldBright
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CloudDone,
-                            contentDescription = null,
-                            modifier = Modifier.size(17.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = if (file.driveSyncState == DriveSyncState.SYNCED_TO_DRIVE) {
-                                "Re-Save .enc to Drive"
-                            } else {
-                                "Save .enc to Drive"
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
                     OutlinedButton(
                         onClick = {
                             filePendingDecryptedExport = file

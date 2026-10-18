@@ -1,6 +1,7 @@
 package com.example.encrypz.drive
 
 import android.accounts.Account
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,9 +11,13 @@ import com.example.encrypz.auth.GoogleAuthConfig
 import com.example.encrypz.auth.LoopbackGoogleOAuthServer
 import com.example.encrypz.data.MongoAtlasClient
 import com.example.encrypz.ui.vault.VaultFileEntry
-import com.google.android.gms.auth.GoogleAuthException
+import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.api.Scope
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.tasks.Tasks
+import java.util.concurrent.TimeUnit
 import com.google.android.gms.auth.GoogleAuthUtil
-import com.google.android.gms.auth.UserRecoverableAuthException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -61,7 +66,9 @@ object GoogleDriveSyncManager {
         val email: String,
         val folderId: String? = null,
         val refreshToken: String? = null,
-        val consentIntent: Intent? = null
+        val consentIntent: Intent? = null,
+        val authorizationIntent: PendingIntent? = null,
+        val error: String? = null
     )
 
     data class RemoteDriveEncryptedFile(
@@ -81,171 +88,96 @@ object GoogleDriveSyncManager {
     }
 
     /**
-     * Checks whether the account already has a cached or refreshable Google Drive OAuth token.
-     */
-    fun hasAuthorizedDriveAccess(
-        context: Context,
-        accountEmail: String,
-        fallbackRefreshTokenFromDb: String? = null
-    ): Boolean {
-        val cleanEmail = accountEmail.trim()
-        if (cleanEmail.isBlank() || !cleanEmail.contains("@")) return false
-        return LoopbackGoogleOAuthServer.hasCachedOrRefreshToken(
-            context = context,
-            email = cleanEmail,
-            fallbackRefreshTokenFromDb = fallbackRefreshTokenFromDb
-        )
-    }
-
-    /**
      * Requests Google Drive permission during Login or Account Creation (if not already granted)
      * and immediately ensures the `Encrypz` folder exists in the user's Google Drive.
      */
     suspend fun requestDrivePermissionAndEnsureFolder(
         context: Context,
         accountEmail: String,
-        fallbackRefreshTokenFromDb: String? = null
+        fallbackRefreshTokenFromDb: String? = null,
+        authorizationData: Intent? = null
     ): DrivePermissionResult = withContext(Dispatchers.IO) {
-        val cleanEmail = accountEmail.trim()
-
-        // 1. Silently reuse an already-granted permission (cached / refresh token / GMS token).
-        //    Only if nothing is available do we show the Google consent screen (once, at login).
-        if (cleanEmail.contains("@")) {
-            val silent = resolveDriveAccessToken(
-                context = context,
-                cleanEmail = cleanEmail,
-                allowInteractiveLoopback = false,
-                fallbackRefreshTokenFromDb = fallbackRefreshTokenFromDb
-            )
-            if (silent is TokenResolution.ConsentRequired) {
-                return@withContext DrivePermissionResult(
-                    granted = false, email = cleanEmail, consentIntent = silent.intent
-                )
-            }
-            if (silent is TokenResolution.Token) {
-                val folderId = try {
-                    findOrCreateEncrypzVaultFolder(context, cleanEmail, silent.accessToken)
-                } catch (ex: Exception) {
-                    if (isAuthError(ex)) {
-                        LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
-                        try { GoogleAuthUtil.clearToken(context, silent.accessToken) } catch (_: Exception) { }
-                        val refreshed = resolveDriveAccessToken(context, cleanEmail, false)
-                        if (refreshed is TokenResolution.ConsentRequired) {
-                            return@withContext DrivePermissionResult(
-                                granted = false, email = cleanEmail, consentIntent = refreshed.intent
-                            )
-                        }
-                        if (refreshed is TokenResolution.Token) {
-                            return@withContext DrivePermissionResult(
-                                granted = true, email = cleanEmail,
-                                folderId = try {
-                                    findOrCreateEncrypzVaultFolder(context, cleanEmail, refreshed.accessToken)
-                                } catch (_: Exception) { null }
-                            )
-                        }
-                        null
-                    } else {
-                        // Network/transient error: permission is still granted, folder will be created on upload
-                        ""
-                    }
-                }
-                if (folderId != null) {
-                    return@withContext DrivePermissionResult(
-                        granted = true,
-                        email = cleanEmail,
-                        folderId = folderId.ifBlank { null },
-                        refreshToken = LoopbackGoogleOAuthServer.getSavedRefreshToken(context, cleanEmail)
-                    )
-                }
-            }
+        val email = accountEmail.trim().lowercase()
+        if (!email.contains("@")) {
+            return@withContext DrivePermissionResult(false, email, error = "Choose a Google account first.")
         }
-
-        return@withContext DrivePermissionResult(
-            granted = false,
-            email = cleanEmail
-        )
+        try {
+            val resolution = if (authorizationData != null) {
+                val result = Identity.getAuthorizationClient(context)
+                    .getAuthorizationResultFromIntent(authorizationData)
+                val token = result.accessToken
+                if (token.isNullOrBlank()) TokenResolution.Failed("Google did not grant Drive access.")
+                else TokenResolution.Token(token)
+            } else {
+                resolveDriveAccessToken(context, email, false)
+            }
+            when (resolution) {
+                is TokenResolution.Token -> {
+                    val folderId = try {
+                        findOrCreateEncrypzVaultFolder(context, email, resolution.accessToken)
+                    } catch (ex: Exception) {
+                        if (!isAuthError(ex)) throw ex
+                        GoogleAuthUtil.clearToken(context, resolution.accessToken)
+                        val retry = resolveDriveAccessToken(context, email, false)
+                        if (retry is TokenResolution.AuthorizationRequired) {
+                            return@withContext DrivePermissionResult(false, email, authorizationIntent = retry.intent)
+                        }
+                        if (retry !is TokenResolution.Token) throw ex
+                        findOrCreateEncrypzVaultFolder(context, email, retry.accessToken)
+                    }
+                    DrivePermissionResult(true, email, folderId = folderId)
+                }
+                is TokenResolution.AuthorizationRequired -> DrivePermissionResult(
+                    false, email, authorizationIntent = resolution.intent
+                )
+                is TokenResolution.ConsentRequired -> DrivePermissionResult(false, email, consentIntent = resolution.intent)
+                is TokenResolution.Failed -> DrivePermissionResult(false, email, error = resolution.reason)
+            }
+        } catch (ex: Exception) {
+            DrivePermissionResult(false, email, error = driveErrorMessage(ex))
+        }
     }
 
-    /**
-     * Resolves a valid Google Drive OAuth 2.0 access token for [cleanEmail]:
-     * 1. Cached or refreshed OAuth token from [LoopbackGoogleOAuthServer] / MongoDB refresh token.
-     * 2. Native Android [GoogleAuthUtil.getToken] if already granted without requiring GMS consent.
-     * 3. Loopback OAuth 2.0 flow (`http://localhost:5207/api/Auth/google-callback`) using
-     *    [GoogleAuthConfig.CLIENT_ID] and [GoogleAuthConfig.CLIENT_SECRET].
-     */
+    // AuthorizationClient reuses the account's grant and renews tokens silently.
+    // Only the login flow may launch a returned resolution; uploads never launch UI.
     private suspend fun resolveDriveAccessToken(
         context: Context,
         cleanEmail: String,
         allowInteractiveLoopback: Boolean,
         fallbackRefreshTokenFromDb: String? = null
     ): TokenResolution = withContext(Dispatchers.IO) {
-        // 1. Check cached / refreshable OAuth token first
-        val dbRefreshToken = fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
-            ?: if (LoopbackGoogleOAuthServer.getSavedRefreshToken(context, cleanEmail).isNullOrBlank()) {
-                try {
-                    MongoAtlasClient.findUserVaultRecord(cleanEmail)?.googleRefreshToken
-                } catch (_: Exception) {
-                    null
-                }
-            } else {
-                null
-            }
-        val cachedOrRefreshed = LoopbackGoogleOAuthServer.getValidAccessTokenOrRefresh(
-            context = context,
-            email = cleanEmail,
-            fallbackRefreshTokenFromDb = dbRefreshToken
-        )
-        if (!cachedOrRefreshed.isNullOrBlank()) {
-            return@withContext TokenResolution.Token(cachedOrRefreshed)
-        }
-
-        // 2. Try Google Play Services GoogleAuthUtil.getToken if already authorized (silent)
-        var recoverableIntent: Intent? = null
         try {
-            val scope = "oauth2:${GoogleAuthConfig.SCOPE_DRIVE_FILE}"
-            val gmsToken = GoogleAuthUtil.getToken(context, Account(cleanEmail, "com.google"), scope)
-            if (!gmsToken.isNullOrBlank()) {
-                // Cache it so the app remembers Drive permission was granted (no re-prompt on upload)
-                LoopbackGoogleOAuthServer.saveTokenBundle(
-                    context,
-                    cleanEmail,
-                    LoopbackGoogleOAuthServer.OAuthTokenBundle(
-                        accessToken = gmsToken,
-                        refreshToken = null,
-                        email = cleanEmail,
-                        expiresInSeconds = 3000L
-                    )
-                )
-                return@withContext TokenResolution.Token(gmsToken)
-            }
-        } catch (recoverable: UserRecoverableAuthException) {
-            recoverableIntent = recoverable.intent
-        } catch (_: GoogleAuthException) {
-            // Will use Web OAuth Loopback flow below
-        } catch (_: Exception) {
-            // Will use Web OAuth Loopback flow below
-        }
-
-        // 3. Use the configured Web OAuth Client ID & Secret via Loopback OAuth flow
-        if (allowInteractiveLoopback && GoogleAuthConfig.CLIENT_ID.isNotBlank() && GoogleAuthConfig.CLIENT_SECRET.isNotBlank()) {
-            val bundle = LoopbackGoogleOAuthServer.authorizeViaLoopbackBrowser(
-                context = context,
-                loginHintEmail = cleanEmail
+            val request = AuthorizationRequest.builder()
+                .setAccount(Account(cleanEmail, "com.google"))
+                .setRequestedScopes(listOf(Scope(GoogleAuthConfig.SCOPE_DRIVE_FILE)))
+                .build()
+            val result = Tasks.await(
+                Identity.getAuthorizationClient(context).authorize(request), 60, TimeUnit.SECONDS
             )
-            if (bundle != null && bundle.accessToken.isNotBlank()) {
-                return@withContext TokenResolution.Token(bundle.accessToken)
+            if (result.hasResolution()) {
+                val intent = result.pendingIntent
+                return@withContext if (intent != null) TokenResolution.AuthorizationRequired(intent)
+                    else TokenResolution.Failed("Google did not provide a Drive permission dialog.")
             }
+            val token = result.accessToken
+            if (token.isNullOrBlank()) TokenResolution.Failed("Google did not return a Drive access token.")
+            else TokenResolution.Token(token)
+        } catch (ex: Exception) {
+            TokenResolution.Failed(driveErrorMessage(ex))
         }
+    }
 
-        // Return native consent to the login screen; uploads never launch it.
-        if (recoverableIntent != null) {
-            return@withContext TokenResolution.ConsentRequired(recoverableIntent)
+    private fun driveErrorMessage(ex: Exception): String {
+        val cause = ex.cause ?: ex
+        return if (cause is ApiException && cause.statusCode == 10) {
+            "Google sign-in configuration error (10). Register this APK's package and signing SHA-1 in the Google Cloud Android OAuth client."
+        } else {
+            "Google Drive: ${cause.message ?: cause.javaClass.simpleName}"
         }
-
-        return@withContext TokenResolution.Failed("Google Drive permission is required to save files to the 'Encrypz' folder")
     }
 
     private sealed class TokenResolution {
+        data class AuthorizationRequired(val intent: PendingIntent) : TokenResolution()
         data class Token(val accessToken: String) : TokenResolution()
         data class ConsentRequired(val intent: Intent) : TokenResolution()
         data class Failed(val reason: String) : TokenResolution()
@@ -298,7 +230,7 @@ object GoogleDriveSyncManager {
         // Uploads NEVER prompt for permission — they reuse the permission granted at Login.
         var token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = false)) {
             is TokenResolution.Token -> res.accessToken
-            is TokenResolution.ConsentRequired -> {
+            is TokenResolution.AuthorizationRequired, is TokenResolution.ConsentRequired -> {
                 return@withContext DriveUploadResult.UploadFailed(
                     fileId = file.id,
                     encryptedFileName = safeEncryptedName,
@@ -423,7 +355,7 @@ object GoogleDriveSyncManager {
 
         val token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = false)) {
             is TokenResolution.Token -> res.accessToken
-            is TokenResolution.ConsentRequired -> {
+            is TokenResolution.AuthorizationRequired, is TokenResolution.ConsentRequired -> {
                 return@withContext DriveRemoteSyncResult.Unavailable(
                     "Google Drive permission not granted yet. It will be requested on your next login."
                 )
@@ -560,11 +492,13 @@ object GoogleDriveSyncManager {
      * If the `Encrypz` folder does not exist, creates a new folder named `Encrypz` in Google Drive
      * and returns its Google Drive folder ID.
      */
+    private val folderLock = Any()
+
     private fun findOrCreateEncrypzVaultFolder(
         context: Context,
         email: String,
         accessToken: String
-    ): String {
+    ): String = synchronized(folderLock) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val cachedFolderId = prefs.getString("$KEY_VAULT_FOLDER_ID_PREFIX$email", null)
         if (!cachedFolderId.isNullOrBlank()) {
@@ -600,6 +534,7 @@ object GoogleDriveSyncManager {
         val createMeta = JSONObject().apply {
             put("name", VAULT_DRIVE_FOLDER_NAME)
             put("mimeType", "application/vnd.google-apps.folder")
+            put("parents", JSONArray().put("root"))
             put("description", "Encrypz Zero-Knowledge AES-256-GCM Encrypted Vault")
         }
         val conn = (URL("$DRIVE_FILES_API?fields=id,name").openConnection() as HttpURLConnection).apply {
