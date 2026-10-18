@@ -106,30 +106,36 @@ object GoogleDriveSyncManager {
         fallbackRefreshTokenFromDb: String? = null
     ): DrivePermissionResult = withContext(Dispatchers.IO) {
         val cleanEmail = accountEmail.trim()
-        val cachedOrRefreshed = if (cleanEmail.isNotBlank()) {
-            LoopbackGoogleOAuthServer.getValidAccessTokenOrRefresh(
+
+        // 1. Silently reuse an already-granted permission (cached / refresh token / GMS token).
+        //    Only if nothing is available do we show the Google consent screen (once, at login).
+        if (cleanEmail.contains("@")) {
+            val silent = resolveDriveAccessToken(
                 context = context,
-                email = cleanEmail,
+                cleanEmail = cleanEmail,
+                allowInteractiveLoopback = false,
                 fallbackRefreshTokenFromDb = fallbackRefreshTokenFromDb
             )
-        } else {
-            null
-        }
-
-        if (!cachedOrRefreshed.isNullOrBlank() && cleanEmail.isNotBlank()) {
-            val folderId = try {
-                findOrCreateEncrypzVaultFolder(context, cleanEmail, cachedOrRefreshed)
-            } catch (_: Exception) {
-                LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
-                null
-            }
-            if (!folderId.isNullOrBlank()) {
-                return@withContext DrivePermissionResult(
-                    granted = true,
-                    email = cleanEmail,
-                    folderId = folderId,
-                    refreshToken = LoopbackGoogleOAuthServer.getSavedRefreshToken(context, cleanEmail)
-                )
+            if (silent is TokenResolution.Token) {
+                val folderId = try {
+                    findOrCreateEncrypzVaultFolder(context, cleanEmail, silent.accessToken)
+                } catch (ex: Exception) {
+                    if (isAuthError(ex)) {
+                        LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
+                        null
+                    } else {
+                        // Network/transient error: permission is still granted, folder will be created on upload
+                        ""
+                    }
+                }
+                if (folderId != null) {
+                    return@withContext DrivePermissionResult(
+                        granted = true,
+                        email = cleanEmail,
+                        folderId = folderId.ifBlank { null },
+                        refreshToken = LoopbackGoogleOAuthServer.getSavedRefreshToken(context, cleanEmail)
+                    )
+                }
             }
         }
 
@@ -173,29 +179,46 @@ object GoogleDriveSyncManager {
     private suspend fun resolveDriveAccessToken(
         context: Context,
         cleanEmail: String,
-        allowInteractiveLoopback: Boolean
+        allowInteractiveLoopback: Boolean,
+        fallbackRefreshTokenFromDb: String? = null
     ): TokenResolution = withContext(Dispatchers.IO) {
         // 1. Check cached / refreshable OAuth token first
-        val dbRecord = try {
-            MongoAtlasClient.findUserVaultRecord(cleanEmail)
-        } catch (_: Exception) {
-            null
-        }
+        val dbRefreshToken = fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
+            ?: if (LoopbackGoogleOAuthServer.getSavedRefreshToken(context, cleanEmail).isNullOrBlank()) {
+                try {
+                    MongoAtlasClient.findUserVaultRecord(cleanEmail)?.googleRefreshToken
+                } catch (_: Exception) {
+                    null
+                }
+            } else {
+                null
+            }
         val cachedOrRefreshed = LoopbackGoogleOAuthServer.getValidAccessTokenOrRefresh(
             context = context,
             email = cleanEmail,
-            fallbackRefreshTokenFromDb = dbRecord?.googleRefreshToken
+            fallbackRefreshTokenFromDb = dbRefreshToken
         )
         if (!cachedOrRefreshed.isNullOrBlank()) {
             return@withContext TokenResolution.Token(cachedOrRefreshed)
         }
 
-        // 2. Try Google Play Services GoogleAuthUtil.getToken if already authorized
+        // 2. Try Google Play Services GoogleAuthUtil.getToken if already authorized (silent)
         var recoverableIntent: Intent? = null
         try {
             val scope = "oauth2:${GoogleAuthConfig.SCOPE_DRIVE_FILE}"
             val gmsToken = GoogleAuthUtil.getToken(context, Account(cleanEmail, "com.google"), scope)
             if (!gmsToken.isNullOrBlank()) {
+                // Cache it so the app remembers Drive permission was granted (no re-prompt on upload)
+                LoopbackGoogleOAuthServer.saveTokenBundle(
+                    context,
+                    cleanEmail,
+                    LoopbackGoogleOAuthServer.OAuthTokenBundle(
+                        accessToken = gmsToken,
+                        refreshToken = null,
+                        email = cleanEmail,
+                        expiresInSeconds = 3000L
+                    )
+                )
                 return@withContext TokenResolution.Token(gmsToken)
             }
         } catch (recoverable: UserRecoverableAuthException) {
@@ -275,12 +298,14 @@ object GoogleDriveSyncManager {
             )
         }
 
-        var token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = true)) {
+        // Uploads NEVER prompt for permission — they reuse the permission granted at Login.
+        var token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = false)) {
             is TokenResolution.Token -> res.accessToken
             is TokenResolution.ConsentRequired -> {
-                return@withContext DriveUploadResult.NeedsUserConsent(
-                    consentIntent = res.intent,
-                    fileId = file.id
+                return@withContext DriveUploadResult.UploadFailed(
+                    fileId = file.id,
+                    encryptedFileName = safeEncryptedName,
+                    reason = "Google Drive permission not granted yet. It will be requested on your next login."
                 )
             }
             is TokenResolution.Failed -> {
@@ -312,14 +337,21 @@ object GoogleDriveSyncManager {
                 folderName = VAULT_DRIVE_FOLDER_NAME
             )
         } catch (firstEx: Exception) {
-            // Clear expired/stale access token and retry once with a freshly refreshed/resolved token
+            if (!isAuthError(firstEx)) {
+                return@withContext DriveUploadResult.UploadFailed(
+                    fileId = file.id,
+                    encryptedFileName = safeEncryptedName,
+                    reason = firstEx.message ?: "Direct Drive API upload failed"
+                )
+            }
+            // Access token expired/revoked: clear it and silently refresh (never prompt)
             try {
                 GoogleAuthUtil.clearToken(context, token)
             } catch (_: Exception) {
             }
             LoopbackGoogleOAuthServer.clearCachedAccessToken(context, cleanEmail)
 
-            val retryRes = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = true)
+            val retryRes = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = false)
             if (retryRes is TokenResolution.Token) {
                 token = retryRes.accessToken
                 try {
@@ -392,10 +424,12 @@ object GoogleDriveSyncManager {
             return@withContext DriveRemoteSyncResult.Unavailable("Connect your Google account first")
         }
 
-        val token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = true)) {
+        val token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = false)) {
             is TokenResolution.Token -> res.accessToken
             is TokenResolution.ConsentRequired -> {
-                return@withContext DriveRemoteSyncResult.NeedsUserConsent(res.intent)
+                return@withContext DriveRemoteSyncResult.Unavailable(
+                    "Google Drive permission not granted yet. It will be requested on your next login."
+                )
             }
             is TokenResolution.Failed -> {
                 return@withContext DriveRemoteSyncResult.Unavailable(res.reason)
@@ -691,5 +725,11 @@ object GoogleDriveSyncManager {
     private fun readStream(stream: java.io.InputStream?): String {
         if (stream == null) return ""
         return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
+    /** True if the Drive API rejected the access token (expired / revoked). */
+    private fun isAuthError(ex: Exception): Boolean {
+        val msg = ex.message ?: return false
+        return msg.contains("HTTP 401") || msg.contains("(401)")
     }
 }

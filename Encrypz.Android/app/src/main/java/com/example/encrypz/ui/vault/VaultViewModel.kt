@@ -332,6 +332,11 @@ class VaultViewModel : ViewModel() {
             null
         }
 
+        // A permission request is already running (e.g. account selection + unlock both triggered it)
+        if (_uiState.value.isRequestingDrivePermission) {
+            return
+        }
+
         _uiState.update {
             it.copy(
                 isRequestingDrivePermission = true,
@@ -1004,13 +1009,16 @@ class VaultViewModel : ViewModel() {
                 }
 
                 is GoogleDriveSyncManager.DriveUploadResult.NeedsUserConsent -> {
+                    // Never prompt during upload — keep encrypted locally; it syncs after the next login grant
                     _uiState.update { state ->
                         state.copy(
-                            pendingDriveConsentIntent = result.consentIntent,
-                            pendingDriveConsentFileId = result.fileId,
-                            statusBannerMessage = "Grant Google Drive access to save encrypted \"${targetFile.name}\" to 'Encrypz'"
+                            files = state.files.map {
+                                if (it.id == fileId) it.copy(driveSyncState = DriveSyncState.LOCAL_ENCRYPTED) else it
+                            },
+                            statusBannerMessage = "\"${targetFile.name}\" encrypted locally — will be saved to Google Drive 'Encrypz' after Drive permission is granted at login"
                         )
                     }
+                    persistIfPossible(context)
                 }
 
                 is GoogleDriveSyncManager.DriveUploadResult.UploadFailed -> {
@@ -1042,17 +1050,9 @@ class VaultViewModel : ViewModel() {
         if (pendingFileId != null) {
             if (granted) {
                 saveFileToGoogleDrive(context, pendingFileId, forceDocumentSaver = false)
-            } else {
-                requestGoogleDrivePermission(context) { authorized ->
-                    if (authorized) {
-                        saveFileToGoogleDrive(context, pendingFileId, forceDocumentSaver = false)
-                    }
-                }
             }
         } else if (granted) {
             syncVaultWithGoogleDrive(context)
-        } else {
-            requestGoogleDrivePermission(context)
         }
     }
 

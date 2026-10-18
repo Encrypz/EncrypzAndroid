@@ -11,6 +11,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -48,6 +50,7 @@ object LoopbackGoogleOAuthServer {
     private const val KEY_REFRESH_TOKEN_PREFIX = "refresh_token_"
 
     private val oauthScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val authMutex = Mutex()
 
     @Volatile
     private var activeServerSocket: ServerSocket? = null
@@ -166,6 +169,26 @@ object LoopbackGoogleOAuthServer {
      * `access_token` and `refresh_token`.
      */
     suspend fun authorizeViaLoopbackBrowser(
+        context: Context,
+        loginHintEmail: String?
+    ): OAuthTokenBundle? = authMutex.withLock {
+        // If another (concurrent) login step already obtained permission, reuse it — never prompt twice.
+        val hint = loginHintEmail?.trim().orEmpty()
+        if (hint.contains("@")) {
+            val existing = getValidAccessTokenOrRefresh(context, hint)
+            if (!existing.isNullOrBlank()) {
+                return@withLock OAuthTokenBundle(
+                    accessToken = existing,
+                    refreshToken = getSavedRefreshToken(context, hint),
+                    email = hint,
+                    expiresInSeconds = 3000L
+                )
+            }
+        }
+        authorizeViaLoopbackBrowserInternal(context, loginHintEmail)
+    }
+
+    private suspend fun authorizeViaLoopbackBrowserInternal(
         context: Context,
         loginHintEmail: String?
     ): OAuthTokenBundle? = withContext(oauthScope.coroutineContext) {
