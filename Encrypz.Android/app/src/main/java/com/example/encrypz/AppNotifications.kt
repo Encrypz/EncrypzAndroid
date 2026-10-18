@@ -21,7 +21,7 @@ object AppNotifications {
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Login, sync, and vault status updates"
+                description = "Important upload and download updates"
             }
             context.getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(channel)
@@ -43,5 +43,10 @@ object AppNotifications {
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(nextId++, notification)
+    }
+
+    fun isTransferStatus(message: String): Boolean {
+        val normalized = message.lowercase()
+        return listOf("upload", "download", "import", "sync").any(normalized::contains)
     }
 }

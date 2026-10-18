@@ -34,14 +34,15 @@ fun MainNavigation(
 
     androidx.compose.runtime.LaunchedEffect(vaultState.statusBannerMessage) {
         vaultState.statusBannerMessage?.let { message ->
-            AppNotifications.show(
-                context,
-                message,
-                isError = message.contains("error", ignoreCase = true) ||
-                    message.contains("wrong", ignoreCase = true) ||
-                    message.contains("unable", ignoreCase = true) ||
-                    message.contains("failed", ignoreCase = true)
-            )
+            if (AppNotifications.isTransferStatus(message)) {
+                AppNotifications.show(
+                    context,
+                    message,
+                    isError = message.contains("error", ignoreCase = true) ||
+                        message.contains("unable", ignoreCase = true) ||
+                        message.contains("failed", ignoreCase = true)
+                )
+            }
         }
     }
 
