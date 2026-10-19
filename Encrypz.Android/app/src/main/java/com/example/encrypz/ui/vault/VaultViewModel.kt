@@ -1238,6 +1238,15 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    fun moveFileToFolder(fileId: String, folderId: String?, context: Context? = null) {
+        if (!_uiState.value.isVaultUnlocked) return
+        if (folderId != null && _uiState.value.folders.none { it.id == folderId && !it.isDeleted }) return
+        _uiState.update { state -> state.copy(files = state.files.map {
+            if (it.id == fileId && !it.isDeleted) it.copy(folderId = folderId) else it
+        }, statusBannerMessage = "Photo moved to folder") }
+        persistIfPossible(context)
+    }
+
     fun moveFileToRecycleBin(fileId: String, context: Context? = null) {
         _uiState.update { state ->
             val target = state.files.find { it.id == fileId }

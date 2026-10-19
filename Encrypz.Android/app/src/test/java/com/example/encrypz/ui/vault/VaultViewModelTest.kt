@@ -197,4 +197,23 @@ class VaultViewModelTest {
         assertFalse(model.unlockWithMasterPassword("ReplacementPassword#2026", true))
         assertTrue(model.unlockWithMasterPassword("OriginalPassword#2026"))
     }
+    @Test
+    fun movingFilePreservesEncryptedContentAndRejectsMissingFolder() {
+        val model = VaultViewModel()
+        model.connectGoogleAccount("move@example.com")
+        assertTrue(model.unlockWithMasterPassword("MoveTestPassword#2026", true))
+        model.encryptAndAddSecureNote("photo-note.txt", "private content")
+        val file = model.uiState.value.files.first()
+        model.createFolder("Album")
+        val folder = model.uiState.value.folders.first()
+        model.moveFileToFolder(file.id, folder.id)
+        val moved = model.uiState.value.files.first { it.id == file.id }
+        assertEquals(folder.id, moved.folderId)
+        org.junit.Assert.assertArrayEquals(file.encryptedPayload, moved.encryptedPayload)
+        assertEquals("private content", model.decryptFilePreview(moved))
+        model.moveFileToFolder(file.id, "missing-folder")
+        assertEquals(folder.id, model.uiState.value.files.first { it.id == file.id }.folderId)
+        model.moveFileToFolder(file.id, null)
+        assertEquals(null, model.uiState.value.files.first { it.id == file.id }.folderId)
+    }
 }
