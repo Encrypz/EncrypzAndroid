@@ -4,9 +4,7 @@
 name: Build and deploy ASP.Net Core app to Azure Web App - eptheekshana
 
 on:
-  push:
-    branches:
-      - main
+  # Deploy only when explicitly started from GitHub Actions.
   workflow_dispatch:
 
 jobs:
@@ -62,4 +60,3 @@ jobs:
           app-name: 'eptheekshana'
           slot-name: 'Production'
           package: .
-          
