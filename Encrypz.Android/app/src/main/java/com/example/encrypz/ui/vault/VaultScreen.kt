@@ -341,7 +341,7 @@ fun VaultScreen(
     }
 
     // Handle Android Back button inside nested folders
-    BackHandler(enabled = (currentTab == VaultTab.PHOTOS || currentTab == VaultTab.FILES) && state.breadcrumbs.size > 1) {
+    BackHandler(enabled = currentTab == VaultTab.FILES && state.breadcrumbs.size > 1) {
         viewModel.navigateUp()
     }
 
@@ -373,7 +373,7 @@ fun VaultScreen(
             ) {
                 TopAppBar(
                     navigationIcon = {
-                        if ((currentTab == VaultTab.PHOTOS || currentTab == VaultTab.FILES) && state.breadcrumbs.size > 1) {
+                        if (currentTab == VaultTab.FILES && state.breadcrumbs.size > 1) {
                             IconButton(onClick = { viewModel.navigateUp() }) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -406,7 +406,7 @@ fun VaultScreen(
                             ) {
                                 Text(
                                     text = when (currentTab) {
-                                        VaultTab.PHOTOS -> state.breadcrumbs.lastOrNull()?.name ?: "Photos"
+                                        VaultTab.PHOTOS -> "Photos"
                                         VaultTab.FILES -> state.breadcrumbs.lastOrNull()?.name ?: "Files"
                                         VaultTab.RECYCLE_BIN -> "Recycle Bin"
                                         VaultTab.SECURITY_PROFILE -> "Security & Profile"
@@ -610,16 +610,8 @@ fun VaultScreen(
                         color = EncrypzMuted, modifier = Modifier.fillMaxWidth().padding(16.dp))
                 }
                 when (currentTab) {
-                    VaultTab.PHOTOS -> MyVaultTabContent(
-                        state = state,
-                        viewModel = viewModel,
-                        photosOnly = true,
-                        onSearchQueryChange = viewModel::updateSearchQuery,
-                        onSelectCategory = viewModel::selectCategory,
-                        onToggleViewMode = viewModel::toggleViewMode,
-                        onBreadcrumbClick = viewModel::navigateToBreadcrumb,
-                        onFolderClick = viewModel::navigateToFolder,
-                        onFolderMoreClick = { selectedFolderForDetails = it },
+                    VaultTab.PHOTOS -> PhotosTimeline(
+                        state = state, viewModel = viewModel,
                         onFileClick = { selectedFileForDetails = it },
                         onAddClick = { showAddSheet = true }
                     )

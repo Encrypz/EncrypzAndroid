@@ -321,6 +321,15 @@ fun LoginScreen(
         }
     }
 
+    if (isGoogleSignedIn && usePinMode && isPinSet && !showPinSetupStepAfterFirstLogin && !isCreatingVault) {
+        PinUnlockScreen(email = activeEmail, pin = pinInput, error = errorMessage,
+            onDigit = { if (pinInput.length < 6) { pinInput += it; errorMessage = null } },
+            onBackspace = { pinInput = pinInput.dropLast(1); errorMessage = null },
+            onUnlock = handlePinUnlock,
+            onUsePassword = { usePinMode = false; pinInput = ""; errorMessage = null }, modifier = modifier)
+        return
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
