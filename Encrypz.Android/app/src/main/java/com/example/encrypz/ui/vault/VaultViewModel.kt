@@ -182,6 +182,11 @@ data class VaultUiState(
 }
 
 class VaultViewModel : ViewModel() {
+    private val previewCacheDelegate = lazy { VaultPreviewCache() }
+    internal val previewCache: VaultPreviewCache get() = previewCacheDelegate.value
+    private fun clearPreviewCache() {
+        if (previewCacheDelegate.isInitialized()) previewCache.clear()
+    }
     private var activeVaultKey: SecretKey = VaultCrypto.generateVaultKey()
     private var salt: ByteArray = VaultCrypto.generateSalt()
     private var wrappedVaultKey: ByteArray = VaultCrypto.encryptPayload(activeVaultKey.encoded, activeVaultKey)
@@ -249,6 +254,7 @@ class VaultViewModel : ViewModel() {
         val cleanEmail = email.trim()
         if (cleanEmail.isEmpty()) return
         if (!_uiState.value.connectedGoogleEmail.equals(cleanEmail, ignoreCase = true)) {
+            clearPreviewCache()
             _uiState.update { it.copy(isRequestingDrivePermission = false,
                 pendingDriveAuthorization = null, driveAuthorizationEmail = null, driveSetupError = null) }
         }
@@ -432,6 +438,7 @@ class VaultViewModel : ViewModel() {
     }
 
     fun disconnectGoogleAccount() {
+        clearPreviewCache()
         _uiState.update {
             it.copy(
                 isGoogleConnected = false,
@@ -731,6 +738,7 @@ class VaultViewModel : ViewModel() {
     }
 
     fun lockVault() {
+        clearPreviewCache()
         _uiState.update {
             it.copy(
                 isVaultUnlocked = false,

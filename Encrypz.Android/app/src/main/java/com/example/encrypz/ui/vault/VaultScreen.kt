@@ -1405,16 +1405,14 @@ private fun MyVaultTabContent(
             }
 
             if (state.viewMode == VaultViewMode.GRID) {
-                item {
-                    FlowRow(
+                items(visibleFolders.chunked(2), key = { "folder-row-${it.first().id}" }, contentType = { "folder-row" }) { folders ->
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
+                            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        maxItemsInEachRow = 2
                     ) {
-                        visibleFolders.forEach { folder ->
+                        folders.forEach { folder ->
                             FolderGridCard(
                                 folder = folder,
                                 onClick = { onFolderClick(folder) },
@@ -1422,7 +1420,7 @@ private fun MyVaultTabContent(
                                 modifier = Modifier.weight(1f)
                             )
                         }
-                        if (visibleFolders.size % 2 == 1) {
+                        if (folders.size % 2 == 1) {
                             Spacer(Modifier.weight(1f))
                         }
                     }
@@ -1472,16 +1470,14 @@ private fun MyVaultTabContent(
                     )
                 }
             } else if (state.viewMode == VaultViewMode.GRID) {
-                item {
-                    FlowRow(
+                items(visibleFiles.chunked(2), key = { "file-row-${it.first().id}" }, contentType = { "file-row" }) { files ->
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
+                            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        maxItemsInEachRow = 2
                     ) {
-                        visibleFiles.forEach { file ->
+                        files.forEach { file ->
                             FileGridCard(
                                 file = file,
                                 viewModel = viewModel,
@@ -1489,7 +1485,7 @@ private fun MyVaultTabContent(
                                 modifier = Modifier.weight(1f)
                             )
                         }
-                        if (visibleFiles.size % 2 == 1) {
+                        if (files.size % 2 == 1) {
                             Spacer(Modifier.weight(1f))
                         }
                     }

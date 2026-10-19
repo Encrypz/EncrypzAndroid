@@ -54,6 +54,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.getValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -186,7 +190,7 @@ fun readPickedUriForVault(context: Context, uri: Uri): PickedDeviceFileData {
     )
 }
 
-private fun decodeSampledBitmap(bytes: ByteArray, maxDimension: Int): Bitmap? {
+internal fun decodeSampledBitmap(bytes: ByteArray, maxDimension: Int): Bitmap? {
     if (bytes.isEmpty()) return null
     return try {
         val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -271,15 +275,11 @@ fun rememberDecryptedImageBitmap(
     viewModel: VaultViewModel,
     maxDimension: Int = 960
 ): ImageBitmap? {
-    return remember(file.id, maxDimension) {
-        val thumbBytes = viewModel.decryptThumbnailBytes(file)
-        val candidateBytes = thumbBytes ?: viewModel.decryptFileBytes(file)
-        if (candidateBytes != null) {
-            decodeSampledBitmap(candidateBytes, maxDimension)?.asImageBitmap()
-        } else {
-            null
-        }
+    val bitmap by produceState<ImageBitmap?>(null, file.encryptedPayload, file.encryptedThumbnail, maxDimension) {
+        value = null
+        value = viewModel.previewCache.load(file, maxDimension, viewModel)?.asImageBitmap()
     }
+    return bitmap
 }
 
 /**
@@ -298,8 +298,15 @@ fun VaultFileCardPreviewBox(
         viewModel = viewModel,
         maxDimension = if (isCompactThumbnail) 256 else 640
     )
-    val previewText = remember(file.id) {
-        viewModel.decryptFilePreview(file)
+    val previewText by produceState(file.cleanFileName, file.encryptedPayload, isCompactThumbnail) {
+        if (!isCompactThumbnail && file.extension in setOf("txt", "md", "json", "csv", "xml", "log")) {
+            value = withContext(Dispatchers.Default) {
+                viewModel.decryptFileBytes(file)?.let { bytes ->
+                    try { bytes.decodeToString(endIndex = minOf(bytes.size, 4096)) }
+                    finally { bytes.fill(0) }
+                } ?: "Preview unavailable"
+            }
+        }
     }
 
     Box(

@@ -80,11 +80,11 @@ internal fun PhotosTimeline(state: VaultUiState, viewModel: VaultViewModel,
             }
         }
         groups.forEach { (date, entries) ->
-            item(key = "date:$date", span = { GridItemSpan(maxLineSpan) }) {
+            item(key = "date:$date", contentType = "date", span = { GridItemSpan(maxLineSpan) }) {
                 Text(date, style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 10.dp), color = EncrypzText)
             }
-            items(entries, key = { it.id }) { file ->
+            items(entries, key = { it.id }, contentType = { "media" }) { file ->
                 Box(Modifier.fillMaxWidth().aspectRatio(1f).background(EncrypzInput)
                     .semantics { contentDescription = "Open ${file.cleanFileName}" }
                     .clickable { onFileClick(file) }) {
