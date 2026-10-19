@@ -141,7 +141,8 @@ fun LoginScreen(
     onUnlockWithPin: ((String) -> Boolean)? = null,
     onSetupPinAfterFirstLogin: ((String) -> Boolean)? = null,
     onRequestDrivePermission: (() -> Unit)? = null,
-    onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null
+    onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null,
+    fingerprintContent: @Composable () -> Unit = {}
 ) {
     val context = LocalContext.current
     var isGoogleSignedIn by rememberSaveable { mutableStateOf(initialGoogleSignedIn && connectedAccountEmail.isNotBlank()) }
@@ -326,7 +327,8 @@ fun LoginScreen(
             onDigit = { if (pinInput.length < 6) { pinInput += it; errorMessage = null } },
             onBackspace = { pinInput = pinInput.dropLast(1); errorMessage = null },
             onUnlock = handlePinUnlock,
-            onUsePassword = { usePinMode = false; pinInput = ""; errorMessage = null }, modifier = modifier)
+            onUsePassword = { usePinMode = false; pinInput = ""; errorMessage = null }, modifier = modifier,
+            fingerprintContent = fingerprintContent)
         return
     }
 
@@ -360,6 +362,7 @@ fun LoginScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
+            if (isGoogleSignedIn && hasExistingVaultAccount && !isCreatingVault) fingerprintContent()
             // Top Header matching Encrypz.UI AuthLayout.tsx (.auth-header)
             Row(
                 modifier = Modifier

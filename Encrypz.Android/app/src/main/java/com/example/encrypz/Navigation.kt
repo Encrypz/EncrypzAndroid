@@ -118,7 +118,24 @@ fun MainNavigation(
 
     @Composable
     fun UnlockContent() {
+        // Keep this outside the PIN/password branches so cancelling never opens another prompt.
+        var fingerprintPrompted by rememberSaveable(vaultState.connectedGoogleEmail) { mutableStateOf(false) }
+        val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+        androidx.compose.runtime.DisposableEffect(lifecycle) {
+            val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) fingerprintPrompted = false
+            }
+            lifecycle.addObserver(observer)
+            onDispose { lifecycle.removeObserver(observer) }
+        }
+        com.example.encrypz.auth.FingerprintControl(vaultViewModel, vaultState.connectedGoogleEmail,
+            setup = false, autoPrompt = !fingerprintPrompted, showControls = false,
+            onAutoPrompt = { fingerprintPrompted = true }, onUnlocked = { isOnVaultScreen = true })
         LoginScreen(
+            fingerprintContent = {
+                com.example.encrypz.auth.FingerprintControl(vaultViewModel, vaultState.connectedGoogleEmail,
+                    setup = false, onUnlocked = { isOnVaultScreen = true })
+            },
             initialGoogleSignedIn = vaultState.isGoogleConnected,
             connectedAccountEmail = vaultState.connectedGoogleEmail,
             isDrivePermissionGranted = vaultState.isDrivePermissionGranted,

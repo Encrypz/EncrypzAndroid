@@ -19,7 +19,8 @@ import com.example.encrypz.theme.*
 
 @Composable
 internal fun PinUnlockScreen(email: String, pin: String, error: String?, onDigit: (String) -> Unit,
-    onBackspace: () -> Unit, onUnlock: () -> Unit, onUsePassword: () -> Unit, modifier: Modifier = Modifier) {
+    onBackspace: () -> Unit, onUnlock: () -> Unit, onUsePassword: () -> Unit, modifier: Modifier = Modifier,
+    fingerprintContent: @Composable () -> Unit = {}) {
     Box(modifier.fillMaxSize().background(EncrypzBlack).safeDrawingPadding(), contentAlignment = Alignment.Center) {
         Column(Modifier.widthIn(max = 380.dp).fillMaxWidth().verticalScroll(rememberScrollState())
             .padding(horizontal = 28.dp, vertical = 24.dp),
@@ -55,6 +56,7 @@ internal fun PinUnlockScreen(email: String, pin: String, error: String?, onDigit
             Button(onClick = onUnlock, enabled = pin.length == 6,
                 modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Unlock vault") }
             TextButton(onClick = onUsePassword) { Text("Use master password instead") }
+            fingerprintContent()
         }
     }
 }

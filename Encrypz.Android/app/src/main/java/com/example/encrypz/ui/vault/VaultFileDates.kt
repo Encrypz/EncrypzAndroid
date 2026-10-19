@@ -19,6 +19,18 @@ internal val VaultFileEntry.sortDate: Long
 internal val VaultFileEntry.creationDateLabel: String
     get() = if (sortDate > 0) SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date(sortDate)) else "Unknown date"
 
+/** Search the same local calendar date shown on file cards, including legacy upload dates. */
+internal fun VaultFileEntry.matchesVaultSearch(query: String): Boolean {
+    val term = query.trim()
+    if (term.isEmpty() || cleanFileName.contains(term, ignoreCase = true)) return true
+    if (sortDate <= 0) return false
+    val date = Date(sortDate)
+    val normalizedTerm = term.replace(",", "").replace(Regex("\\s+"), " ")
+    return listOf("yyyy-MM-dd", "MMM d yyyy", "MMMM d yyyy", "MMM yyyy", "MMMM yyyy")
+        .any { pattern -> SimpleDateFormat(pattern, Locale.US).format(date)
+            .contains(normalizedTerm, ignoreCase = true) }
+}
+
 internal fun embeddedCreationDate(bytes: ByteArray, context: Context?, name: String): Long? {
     val photoDate = runCatching {
         val exif = ExifInterface(bytes.inputStream())

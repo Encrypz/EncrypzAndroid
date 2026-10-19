@@ -159,7 +159,7 @@ data class VaultUiState(
             !file.isDeleted &&
                 (if (searchQuery.isNotBlank() || selectedCategory != VaultCategoryFilter.ALL) true else file.folderId == currentFolderId) &&
                 (selectedCategory == VaultCategoryFilter.ALL || file.category == selectedCategory) &&
-                (searchQuery.isBlank() || file.name.contains(searchQuery, ignoreCase = true))
+                file.matchesVaultSearch(searchQuery)
         }.sortedByDescending { it.sortDate }
 
     val deletedFolders: List<VaultFolder>
@@ -672,6 +672,28 @@ class VaultViewModel : ViewModel() {
         if (context != null && driveEmailForPin.isNotBlank()) {
             requestGoogleDrivePermission(context, driveEmailForPin)
         }
+        return true
+    }
+
+    fun fingerprintSetupKey(email: String): ByteArray? {
+        val state = _uiState.value
+        if (!state.isVaultUnlocked || !state.hasCompletedFirstLogin ||
+            !state.connectedGoogleEmail.equals(email, ignoreCase = true)) return null
+        return activeVaultKey.encoded.copyOf()
+    }
+
+    fun unlockWithFingerprintKey(email: String, key: ByteArray, context: Context): Boolean {
+        if (email.isBlank() || !_uiState.value.connectedGoogleEmail.equals(email, ignoreCase = true)) return false
+        ensureLocalStorageLoaded(context)
+        val record = LocalVaultStorage.loadUserAuthRecord(context, email.trim().lowercase(Locale.ROOT))
+            ?: return false
+        if (!record.hasLoggedInOnce || key.size != 32 ||
+            !java.security.MessageDigest.isEqual(key, activeVaultKey.encoded)) return false
+        activeVaultKey = javax.crypto.spec.SecretKeySpec(key.copyOf(), "AES")
+        _uiState.update { it.copy(isVaultUnlocked = true, hasExistingVaultAccount = true,
+            hasCompletedFirstLogin = true, promptPinSetupAfterFirstLogin = false,
+            statusBannerMessage = "Vault unlocked with fingerprint") }
+        recoverFileDates(context)
         return true
     }
 

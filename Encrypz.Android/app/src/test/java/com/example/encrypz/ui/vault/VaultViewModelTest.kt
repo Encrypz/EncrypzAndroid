@@ -8,6 +8,20 @@ import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
 class VaultViewModelTest {
+    @Test
+    fun fingerprintSetupRequiresUnlockedMatchingAccountAndReturnsIndependentKeyCopy() {
+        val model = VaultViewModel()
+        model.connectGoogleAccount("fingerprint@example.com")
+        assertEquals(null, model.fingerprintSetupKey("fingerprint@example.com"))
+        assertTrue(model.unlockWithMasterPassword("Fingerprint#MasterPassword2026", true))
+        assertEquals(null, model.fingerprintSetupKey("other@example.com"))
+        val key = model.fingerprintSetupKey("fingerprint@example.com")!!
+        assertEquals(32, key.size)
+        key.fill(0)
+        assertFalse(model.fingerprintSetupKey("fingerprint@example.com")!!.all { it == 0.toByte() })
+        model.lockVault()
+        assertEquals(null, model.fingerprintSetupKey("fingerprint@example.com"))
+    }
 
     @Test
     fun pinRequiresSixDigitsAndBackgroundLocksImmediately() {

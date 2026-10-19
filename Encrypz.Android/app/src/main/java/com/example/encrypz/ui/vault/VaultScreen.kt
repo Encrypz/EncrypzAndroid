@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.heightIn
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.net.Uri
+import androidx.compose.material.icons.filled.DateRange
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -612,6 +613,7 @@ fun VaultScreen(
                     )
 
                     VaultTab.SECURITY_PROFILE -> SecurityProfileTabContent(
+                        viewModel = viewModel,
                         state = state,
                         onRequestDrivePermission = onRequestDrivePermission,
                         onToggleScreenshotProtection = viewModel::setScreenshotProtection,
@@ -1228,6 +1230,7 @@ private fun MyVaultTabContent(
     onFileClick: (VaultFileEntry) -> Unit,
     onAddClick: () -> Unit
 ) {
+    val context = LocalContext.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 100.dp)
@@ -1246,7 +1249,7 @@ private fun MyVaultTabContent(
                     onValueChange = onSearchQueryChange,
                     placeholder = {
                         Text(
-                            text = "Search your vault",
+                            text = "Search name or date",
                             color = EncrypzMuted
                         )
                     },
@@ -1258,6 +1261,20 @@ private fun MyVaultTabContent(
                         )
                     },
                     trailingIcon = {
+                        Row {
+                            IconButton(onClick = {
+                                val calendar = java.util.Calendar.getInstance()
+                                parseVaultDate(state.searchQuery, "yyyy-MM-dd")?.let { calendar.timeInMillis = it }
+                                android.app.DatePickerDialog(context, { _, year, month, day ->
+                                    onSearchQueryChange(String.format(java.util.Locale.ROOT,
+                                        "%04d-%02d-%02d", year, month + 1, day))
+                                }, calendar.get(java.util.Calendar.YEAR),
+                                    calendar.get(java.util.Calendar.MONTH),
+                                    calendar.get(java.util.Calendar.DAY_OF_MONTH)).show()
+                            }) {
+                                Icon(androidx.compose.material.icons.Icons.Default.DateRange,
+                                    contentDescription = "Search files by creation date", tint = EncrypzMuted)
+                            }
                         if (state.searchQuery.isNotEmpty()) {
                             IconButton(onClick = { onSearchQueryChange("") }) {
                                 Icon(
@@ -1266,6 +1283,7 @@ private fun MyVaultTabContent(
                                     tint = EncrypzMuted
                                 )
                             }
+                        }
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -1652,6 +1670,7 @@ private fun RecycleBinTabContent(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SecurityProfileTabContent(
+    viewModel: VaultViewModel,
     state: VaultUiState,
     onRequestDrivePermission: () -> Unit,
     onToggleScreenshotProtection: (Boolean) -> Unit,
@@ -1811,7 +1830,10 @@ private fun SecurityProfileTabContent(
 
                     HorizontalDivider(color = EncrypzBorder)
 
-                    // Quick-Unlock PIN Management (replaces Biometric Hardware Unlock)
+                    com.example.encrypz.auth.FingerprintControl(viewModel, state.connectedGoogleEmail, setup = true)
+                    HorizontalDivider(color = EncrypzBorder)
+
+                    // Quick-Unlock PIN Management
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
