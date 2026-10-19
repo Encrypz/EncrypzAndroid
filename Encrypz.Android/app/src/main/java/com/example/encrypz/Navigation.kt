@@ -44,7 +44,7 @@ fun MainNavigation(
     androidx.compose.runtime.LaunchedEffect(vaultState.isVaultUnlocked,
         vaultState.isDrivePermissionGranted, vaultState.connectedGoogleEmail) {
         if (vaultState.isVaultUnlocked && vaultState.isDrivePermissionGranted) {
-            vaultViewModel.syncVaultWithGoogleDrive(context)
+            vaultViewModel.syncVaultWithGoogleDrive(context, notifyOnCompletion = false)
         }
     }
 

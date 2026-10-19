@@ -1155,7 +1155,7 @@ class VaultViewModel : ViewModel() {
      * Syncs encrypted (.enc) files from the user's "Encrypz Vault" folder on Google Drive
      * and uploads any local unsynced encrypted files.
      */
-    fun syncVaultWithGoogleDrive(context: Context) {
+    fun syncVaultWithGoogleDrive(context: Context, notifyOnCompletion: Boolean = true) {
         if (!_uiState.value.isVaultUnlocked || _uiState.value.isSyncingWithDrive) return
         ensureLocalStorageLoaded(context)
         val syncKey = activeVaultKey
@@ -1239,7 +1239,8 @@ class VaultViewModel : ViewModel() {
                         )
                     }
                     persistIfPossible(context)
-                    if (importedEntries.isNotEmpty() || unreadable > 0) {
+                    // Opening/unlocking the app syncs silently; explicit transfers still notify.
+                    if (notifyOnCompletion && (importedEntries.isNotEmpty() || unreadable > 0)) {
                         com.example.encrypz.AppNotifications.showTransfer(context,
                             _uiState.value.statusBannerMessage.orEmpty(), unreadable > 0)
                     }
