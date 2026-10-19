@@ -20,9 +20,10 @@ data class EncrypzNotification(
 object AppNotifications {
     private const val CHANNEL_ID = "encrypz_status"
     private const val CHANNEL_NAME = "Encrypz status"
+    private const val ATTENTION_NOTIFICATION_ID = 0x454e43
+    private const val ALERT_INTERVAL_MILLIS = 5 * 60 * 1000L
     private var nextId = 1
     private var loaded = false
-    private var lastMessageAt = 0L
     val unreadCount: Int get() = items.count { !it.isRead }
     val items = mutableStateListOf<EncrypzNotification>()
 
@@ -34,7 +35,7 @@ object AppNotifications {
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Important upload and download updates"
+                description = "Transfer failures that need your attention"
             }
             context.getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(channel)
@@ -50,8 +51,10 @@ object AppNotifications {
                 val json = org.json.JSONArray(String(com.example.encrypz.data.DeviceSecrets.open(stored), Charsets.UTF_8))
                 for (i in 0 until json.length()) {
                     val entry = json.getJSONObject(i)
-                    items.add(EncrypzNotification(entry.getString("message"), entry.getBoolean("error"),
-                        entry.getInt("id"), entry.optBoolean("read")))
+                    if (entry.getBoolean("error")) {
+                        items.add(EncrypzNotification(entry.getString("message"), true,
+                            entry.getInt("id"), entry.optBoolean("read")))
+                    }
                 }
                 nextId = (items.maxOfOrNull { it.id } ?: 0) + 1
             }
@@ -68,11 +71,10 @@ object AppNotifications {
 
     fun record(context: Context, message: String, isError: Boolean = false): Int {
         load(context)
-        if (message.isBlank()) return -1
-        // A transfer may also update the status state; keep one inbox entry for that event.
-        val now = android.os.SystemClock.elapsedRealtime()
-        items.firstOrNull()?.takeIf { it.message == message && now - lastMessageAt < 2000 }?.let { return it.id }
-        lastMessageAt = now
+        // Routine status belongs in the current screen, not the notification inbox.
+        if (!isError || message.isBlank()) return -1
+        // Keep an unresolved problem once, including across app restarts.
+        if (items.any { !it.isRead && it.message == message }) return -1
         val id = nextId++
         items.add(0, EncrypzNotification(message, isError, id))
         if (items.size > 50) items.removeLast()
@@ -88,22 +90,31 @@ object AppNotifications {
                 NotificationManagerCompat.from(context).cancel(items[index].id)
             }
         }
+        if (unreadCount == 0) NotificationManagerCompat.from(context).cancel(ATTENTION_NOTIFICATION_ID)
         persist(context)
     }
 
-    /** The only system-notification entry point; called exclusively by file transfers. */
+    /** Only actionable failures alert; all failures share one system notification. */
     fun showTransfer(context: Context, message: String, isError: Boolean = false) {
+        if (!isError) return
         val id = record(context, message, isError)
         if (id < 0 || Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         createChannel(context)
+        val preferences = context.getSharedPreferences("transfer_notifications", Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val lastAlert = preferences.getLong("last_important_alert", 0L)
+        val alert = lastAlert == 0L || now < lastAlert || now - lastAlert >= ALERT_INTERVAL_MILLIS
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(if (isError) "File transfer needs attention" else "Encrypz file transfer")
+            .setContentTitle(if (unreadCount > 1) "$unreadCount transfer issues need attention" else "File transfer needs attention")
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSilent(!alert)
+            .setOnlyAlertOnce(!alert)
             .setAutoCancel(true).build()
-        NotificationManagerCompat.from(context).notify(id, notification)
+        NotificationManagerCompat.from(context).notify(ATTENTION_NOTIFICATION_ID, notification)
+        if (alert) preferences.edit().putLong("last_important_alert", now).apply()
     }
 }

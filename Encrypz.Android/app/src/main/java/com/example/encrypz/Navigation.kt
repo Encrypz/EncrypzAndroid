@@ -33,13 +33,6 @@ fun MainNavigation(
     val context = androidx.compose.ui.platform.LocalContext.current
     val vaultState by vaultViewModel.uiState.collectAsStateWithLifecycle()
 
-    androidx.compose.runtime.LaunchedEffect(vaultState.statusBannerMessage) {
-        vaultState.statusBannerMessage?.let { message ->
-            AppNotifications.record(context, message,
-                message.contains("failed", true) || message.contains("unable", true) || message.contains("could not", true))
-        }
-    }
-
     // The account's vault key is restored before isVaultUnlocked becomes true.
     androidx.compose.runtime.LaunchedEffect(vaultState.isVaultUnlocked,
         vaultState.isDrivePermissionGranted, vaultState.connectedGoogleEmail) {
