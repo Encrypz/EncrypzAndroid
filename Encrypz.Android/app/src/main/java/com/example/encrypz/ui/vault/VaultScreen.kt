@@ -605,6 +605,10 @@ fun VaultScreen(
                 .padding(innerPadding)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
+                state.statusBannerMessage?.let { message ->
+                    Text(text = message, style = MaterialTheme.typography.bodySmall,
+                        color = EncrypzMuted, modifier = Modifier.fillMaxWidth().padding(16.dp))
+                }
                 when (currentTab) {
                     VaultTab.PHOTOS -> MyVaultTabContent(
                         state = state,

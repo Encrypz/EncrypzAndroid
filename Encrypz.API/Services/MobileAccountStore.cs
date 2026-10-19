@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using MongoDB.Bson.Serialization.Attributes;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace Encrypz.API.Services;
@@ -27,6 +28,8 @@ public interface IMobileAccountStore
 {
     Task<MobileAccount?> Find(string subject, CancellationToken ct);
     Task<bool> Create(MobileAccount account, CancellationToken ct);
+    Task<MobileAccount?> FindLegacy(string email, CancellationToken ct);
+    Task Ping(CancellationToken ct);
 }
 
 public sealed class MobileAccountStore : IMobileAccountStore
@@ -45,6 +48,25 @@ public sealed class MobileAccountStore : IMobileAccountStore
     private IMongoCollection<MobileAccount> Accounts => accounts ?? throw new InvalidOperationException("Account service is not configured.");
     public Task<MobileAccount?> Find(string subject, CancellationToken ct) =>
         Accounts.Find(x => x.Subject == subject).FirstOrDefaultAsync(ct)!;
+    public async Task Ping(CancellationToken ct) =>
+        await Accounts.Database.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1), cancellationToken: ct);
+
+    public async Task<MobileAccount?> FindLegacy(string email, CancellationToken ct)
+    {
+        // Only called using the email verified by Google. Never accept a client-supplied owner.
+        var document = await Accounts.Database.GetCollection<BsonDocument>("vault_users")
+            .Find(new BsonDocument("email", email)).FirstOrDefaultAsync(ct);
+        if (document == null) return null;
+        string Field(string name) => document.TryGetValue(name, out var value) && value.IsString ? value.AsString : "";
+        var salt = Field("passwordSaltHex"); var proof = Field("passwordVerifierHex"); var wrapped = Field("wrappedVaultKeyHex");
+        if (salt.Length != 64 || proof.Length != 64 || wrapped.Length != 120 ||
+            !(salt + proof + wrapped).All(Uri.IsHexDigit)) throw new InvalidOperationException("Legacy account requires recovery.");
+        var account = new MobileAccount { Email = email, PasswordSaltHex = salt, WrappedVaultKeyHex = wrapped,
+            CredentialVersion = 1, ProofSalt = RandomNumberGenerator.GetBytes(32) };
+        account.ProofHash = AccountProof.Hash(proof, account.ProofSalt);
+        return account;
+    }
+
     public async Task<bool> Create(MobileAccount account, CancellationToken ct)
     {
         try { await Accounts.InsertOneAsync(account, cancellationToken: ct); return true; }

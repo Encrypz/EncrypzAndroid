@@ -61,9 +61,38 @@ public class MobileAccountTests
         Assert.DoesNotContain("WrappedVaultKey", lookupJson);
         Assert.DoesNotContain("Proof", lookupJson);
     }
+    [Fact] public async Task LegacyKeyIsRestoredOnlyAfterGoogleOwnershipAndCorrectPassword()
+    {
+        var proof = new string('a', 64);
+        var legacy = new MobileAccount { Email = "test@example.com", CredentialVersion = 1,
+            PasswordSaltHex = new string('b', 64), WrappedVaultKeyHex = new string('c', 120),
+            ProofSalt = RandomNumberGenerator.GetBytes(32) };
+        legacy.ProofHash = AccountProof.Hash(proof, legacy.ProofSalt);
+        var store = new FakeStore { Legacy = legacy };
+        var google = new MobileGoogleIdentity(new HttpClient(new GoogleHandler(
+            "{\"sub\":\"123\",\"email\":\"test@example.com\",\"email_verified\":true}")));
+        var controller = new Encrypz.API.Controllers.MobileAccountsController(google, store);
+        controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext {
+            HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext()
+        };
+        controller.Request.Headers.Authorization = "Bearer token";
+        var input = new Encrypz.API.Controllers.MobileAccountsController.Credentials(proof, legacy.PasswordSaltHex, legacy.WrappedVaultKeyHex);
+        Assert.IsType<Microsoft.AspNetCore.Mvc.ConflictObjectResult>(await controller.Register(input, default));
+        Assert.Null(store.Account);
+        Assert.IsType<Microsoft.AspNetCore.Mvc.UnauthorizedResult>(await controller.Login(input with { Proof = new string('d', 64) }, default));
+        Assert.Null(store.Account);
+        Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await controller.Login(input, default));
+        Assert.Equal("123", store.Account!.Subject);
+        Assert.Equal(legacy.WrappedVaultKeyHex, store.Account.WrappedVaultKeyHex);
+        Assert.Equal(1, store.Account.CredentialVersion);
+        Assert.Null(await store.FindLegacy("different@example.com", default));
+    }
     private sealed class FakeStore : IMobileAccountStore
     {
         public MobileAccount? Account;
+        public MobileAccount? Legacy;
+        public Task Ping(CancellationToken ct) => Task.CompletedTask;
+        public Task<MobileAccount?> FindLegacy(string email, CancellationToken ct) => Task.FromResult(Legacy?.Email == email ? Legacy : null);
         public Task<MobileAccount?> Find(string subject, CancellationToken ct) => Task.FromResult(Account?.Subject == subject ? Account : null);
         public Task<bool> Create(MobileAccount account, CancellationToken ct) {
             if (Account != null) return Task.FromResult(false);

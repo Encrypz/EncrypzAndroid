@@ -141,8 +141,7 @@ fun LoginScreen(
     onUnlockWithPin: ((String) -> Boolean)? = null,
     onSetupPinAfterFirstLogin: ((String) -> Boolean)? = null,
     onRequestDrivePermission: (() -> Unit)? = null,
-    onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null,
-    onNotify: ((String, Boolean) -> Unit)? = null
+    onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var isGoogleSignedIn by rememberSaveable { mutableStateOf(initialGoogleSignedIn && connectedAccountEmail.isNotBlank()) }
@@ -163,16 +162,6 @@ fun LoginScreen(
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var infoMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var activeInfoDialog by rememberSaveable { mutableStateOf<AuthInfoDialog?>(null) }
-
-    LaunchedEffect(errorMessage, infoMessage) {
-        errorMessage?.let { onNotify?.invoke(it, true) }
-        if (errorMessage == null) infoMessage?.let { onNotify?.invoke(it, false) }
-    }
-
-    LaunchedEffect(accountError, driveSetupError) {
-        accountError?.let { onNotify?.invoke(it, true) }
-        driveSetupError?.let { onNotify?.invoke(it, true) }
-    }
 
     // Keep activeEmail in sync if OAuth resolved/updated the email
     LaunchedEffect(connectedAccountEmail) {
@@ -1183,6 +1172,15 @@ fun LoginScreen(
             }
 
             Spacer(Modifier.height(24.dp))
+
+            // Authentication feedback stays in the app, never in system notifications.
+            val loginFeedback = errorMessage ?: driveSetupError ?: infoMessage
+            loginFeedback?.let { message ->
+                Text(text = message,
+                    color = if (errorMessage != null || driveSetupError != null) MaterialTheme.colorScheme.error else EncrypzMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth().widthIn(max = 440.dp).padding(bottom = 12.dp))
+            }
 
             // Minimal Bottom Footer matching Encrypz.UI AuthLayout.tsx (.auth-footer)
             Row(

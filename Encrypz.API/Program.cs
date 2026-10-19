@@ -125,6 +125,12 @@ public class Program
 
         app.MapControllers();
         app.MapGet("/health", () => Results.Ok(new { Status = "ok" }));
+        app.MapGet("/health/ready", async (IMobileAccountStore store, CancellationToken ct) => {
+            try { await store.Ping(ct); return Results.Ok(new { status = "ready" }); }
+            catch (Exception e) when (e is MongoDB.Driver.MongoException or TimeoutException or InvalidOperationException) {
+                return Results.StatusCode(503);
+            }
+        });
         app.MapFallbackToFile("index.html");
 
         app.Run();

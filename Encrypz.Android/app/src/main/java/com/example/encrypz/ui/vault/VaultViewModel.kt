@@ -941,6 +941,9 @@ class VaultViewModel : ViewModel() {
                             )
                         }
                         persistIfPossible(context)
+                        com.example.encrypz.AppNotifications.showTransfer(context,
+                            _uiState.value.statusBannerMessage.orEmpty(),
+                            false)
                     }
 
                     is GoogleDriveSyncManager.DriveUploadResult.NeedsUserConsent -> {
@@ -954,6 +957,9 @@ class VaultViewModel : ViewModel() {
                             )
                         }
                         persistIfPossible(context)
+                        com.example.encrypz.AppNotifications.showTransfer(context,
+                            _uiState.value.statusBannerMessage.orEmpty(),
+                            true)
                     }
 
                     is GoogleDriveSyncManager.DriveUploadResult.UploadFailed -> {
@@ -966,6 +972,9 @@ class VaultViewModel : ViewModel() {
                             )
                         }
                         persistIfPossible(context)
+                        com.example.encrypz.AppNotifications.showTransfer(context,
+                            _uiState.value.statusBannerMessage.orEmpty(),
+                            true)
                     }
                 }
             } finally {
@@ -1056,7 +1065,9 @@ class VaultViewModel : ViewModel() {
      * and uploads any local unsynced encrypted files.
      */
     fun syncVaultWithGoogleDrive(context: Context) {
+        if (!_uiState.value.isVaultUnlocked || _uiState.value.isSyncingWithDrive) return
         ensureLocalStorageLoaded(context)
+        val syncKey = activeVaultKey
         val email = _uiState.value.connectedGoogleEmail
             .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
 
@@ -1085,28 +1096,31 @@ class VaultViewModel : ViewModel() {
                 existingFileNames = existingNames
             )) {
                 is GoogleDriveSyncManager.DriveRemoteSyncResult.Success -> {
+                    if (!_uiState.value.isVaultUnlocked || !_uiState.value.connectedGoogleEmail.equals(email, true) || activeVaultKey !== syncKey) {
+                        _uiState.update { it.copy(isSyncingWithDrive = false) }
+                        return@launch
+                    }
+                    var unreadable = syncResult.failedDownloads
                     val importedEntries = syncResult.downloadedFiles.mapNotNull { remote ->
                         val restoredName = try {
-                            VaultFileNames.decryptOrLegacy(remote.name, activeVaultKey)
+                            VaultFileNames.decryptOrLegacy(remote.name, syncKey)
                         } catch (_: Exception) {
+                            unreadable++
                             return@mapNotNull null
                         }
                         val decrypted = try {
-                            VaultCrypto.decryptPayload(remote.encryptedBytes, activeVaultKey)
+                            VaultCrypto.decryptPayload(remote.encryptedBytes, syncKey)
                         } catch (_: Exception) {
-                            null
+                            unreadable++
+                            return@mapNotNull null
                         }
-                        val thumbBytes = if (decrypted != null) {
-                            extractThumbnailFromDecryptedBytes(context, restoredName, decrypted)
-                        } else {
-                            null
-                        }
-                        val encThumb = thumbBytes?.let { VaultCrypto.encryptPayload(it, activeVaultKey) }
+                        val thumbBytes = extractThumbnailFromDecryptedBytes(context, restoredName, decrypted)
+                        val encThumb = thumbBytes?.let { VaultCrypto.encryptPayload(it, syncKey) }
                         VaultFileEntry(
                             id = UUID.randomUUID().toString(),
                             name = restoredName,
                             folderId = null,
-                            sizeBytes = (decrypted?.size ?: remote.encryptedBytes.size).toLong(),
+                            sizeBytes = decrypted.size.toLong(),
                             uploadedAt = currentFormattedDate(),
                             googleAccountEmail = email,
                             encryptedPayload = remote.encryptedBytes,
@@ -1118,18 +1132,22 @@ class VaultViewModel : ViewModel() {
                     }
 
                     _uiState.update { state ->
-                        val mergedFiles = importedEntries + state.files
+                        val mergedFiles = importedEntries.filter { remote -> state.files.none { it.driveFileId == remote.driveFileId } } + state.files
                         state.copy(
                             isSyncingWithDrive = false,
                             files = mergedFiles,
-                            statusBannerMessage = if (importedEntries.isNotEmpty()) {
-                                "Synced ${importedEntries.size} encrypted .enc file(s) from Google Drive"
-                            } else {
-                                "Google Drive Vault is up to date (${GoogleDriveSyncManager.VAULT_DRIVE_FOLDER_NAME})"
+                            statusBannerMessage = when {
+                                unreadable > 0 -> "Downloaded ${importedEntries.size} file(s); $unreadable file(s) could not be restored. Retry the download. Older files may require the original vault key from your previous device."
+                                importedEntries.isNotEmpty() -> "Downloaded ${importedEntries.size} encrypted file(s) from Google Drive"
+                                else -> "Google Drive Vault is up to date (${GoogleDriveSyncManager.VAULT_DRIVE_FOLDER_NAME})"
                             }
                         )
                     }
                     persistIfPossible(context)
+                    if (importedEntries.isNotEmpty() || unreadable > 0) {
+                        com.example.encrypz.AppNotifications.showTransfer(context,
+                            _uiState.value.statusBannerMessage.orEmpty(), unreadable > 0)
+                    }
                 }
 
                 is GoogleDriveSyncManager.DriveRemoteSyncResult.NeedsUserConsent -> {
@@ -1163,6 +1181,7 @@ class VaultViewModel : ViewModel() {
             _uiState.update {
                 it.copy(statusBannerMessage = "Unable to decrypt \"${file.name}\" for export")
             }
+            com.example.encrypz.AppNotifications.showTransfer(context, "Download failed: unable to decrypt the selected file.", true)
             return
         }
         viewModelScope.launch {
@@ -1176,6 +1195,8 @@ class VaultViewModel : ViewModel() {
                     }
                 )
             }
+            com.example.encrypz.AppNotifications.showTransfer(context,
+                if (written) "Downloaded ${file.cleanFileName}" else "Download failed for ${file.cleanFileName}", !written)
         }
     }
 

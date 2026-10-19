@@ -14,7 +14,7 @@ Until step 4 is completed, the app reports that the account server is not deploy
 
 ## Existing installations
 
-An existing local account is enrolled on its next successful master-password login once the backend is configured. Use the original device first: its saved encrypted vault key is needed. Legacy `vault_users` documents are not automatically trusted or overwritten. Losing the original device before enrollment may prevent restoration of legacy files. No password-reset mechanism is implemented; changing a password without rewrapping the key would lose access to files.
+An existing local account is enrolled on its next successful master-password login once the backend is configured. Use the original device first: its saved encrypted vault key is needed. Existing `vault_users` records can now be recovered after Google email ownership and the legacy password proof are verified. The original encrypted vault key is preserved and the credential is stored with a server-side salted hash. No legacy record is overwritten. If no encrypted key was saved remotely and the original installation was erased, those older encrypted files cannot be recovered from the password alone. No password-reset mechanism is implemented; changing a password without rewrapping the key would lose access to files.
 
 The earlier Android implementation bundled Atlas credentials. Rotate that database password in Atlas and update the backend secret before distributing this APK. Remove old `MONGO_*` values from Android local configuration. Never commit `.env`.
 
@@ -25,3 +25,9 @@ The earlier Android implementation bundled Atlas credentials. Rotate that databa
 From `Encrypz.Android`: `./gradlew.bat :app:testDebugUnitTest :app:assembleRelease`
 
 Tests use generated credentials and mocked Google responses, not production Atlas accounts. The account API rate-limits credential attempts and rejects cookie-only requests; Google bearer tokens must verify the email.
+
+## Current Heroku deployment
+
+App: `encrypz-api`. Backend URL: `https://api.encrypz.com`. One Basic web dyno was approved by the owner. Secrets are supplied through Heroku Config Vars; none are committed. `/health` checks the process and `/health/ready` checks MongoDB connectivity. Android local.properties points to this backend.
+
+Android now restores Drive files after unlocking and granting Drive access, follows all listing pages, and checks current and legacy vault folders. System notifications originate only from file upload/download results; authentication feedback stays inline.

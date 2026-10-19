@@ -79,7 +79,8 @@ object GoogleDriveSyncManager {
     sealed class DriveRemoteSyncResult {
         data class Success(
             val folderId: String,
-            val downloadedFiles: List<RemoteDriveEncryptedFile>
+            val downloadedFiles: List<RemoteDriveEncryptedFile>,
+            val failedDownloads: Int = 0
         ) : DriveRemoteSyncResult()
 
         data class NeedsUserConsent(val consentIntent: Intent) : DriveRemoteSyncResult()
@@ -349,41 +350,41 @@ object GoogleDriveSyncManager {
         }
 
         return@withContext try {
-            val folderId = findOrCreateEncrypzVaultFolder(context, cleanEmail, token)
-            val query = "'$folderId' in parents and trashed = false"
-            val encodedQuery = URLEncoder.encode(query, "UTF-8")
-            val listUrl = "$DRIVE_FILES_API?q=$encodedQuery&spaces=drive&fields=files(id,name,size)&pageSize=100"
-
-            val responseJson = executeJsonGet(listUrl, token)
-            val filesArray = responseJson.optJSONArray("files") ?: JSONArray()
+            // Reinstallations may encounter more than one app-created folder, including the old name.
+            val folders = listDriveFiles("mimeType = 'application/vnd.google-apps.folder' and " +
+                "(name = '$VAULT_DRIVE_FOLDER_NAME' or name = 'Encrypz Vault') and trashed = false", token)
+            val folderIds = folders.map { it.getString("id") }.distinct()
             val downloaded = mutableListOf<RemoteDriveEncryptedFile>()
-
-            for (i in 0 until filesArray.length()) {
-                val item = filesArray.getJSONObject(i)
-                val id = item.optString("id")
-                val name = item.optString("name")
-                if (id.isBlank() || !name.endsWith(".enc")) continue
-                if (id in existingDriveIds || name in existingFileNames) continue
-
-                val bytes = downloadDriveFileBytes(id, token)
-                if (bytes != null && bytes.size > 28) {
-                    downloaded.add(
-                        RemoteDriveEncryptedFile(
-                            driveFileId = id,
-                            name = name,
-                            encryptedBytes = bytes
-                        )
-                    )
+            val seen = existingDriveIds.toMutableSet()
+            var failures = 0
+            for (folderId in folderIds) {
+                for (item in listDriveFiles("'$folderId' in parents and trashed = false", token)) {
+                    val id = item.optString("id")
+                    val name = item.optString("name")
+                    if (id.isBlank() || !name.endsWith(".enc", ignoreCase = true) || !seen.add(id)) continue
+                    // Identical filenames are valid distinct files. Deduplicate only by Drive ID.
+                    val bytes = downloadDriveFileBytes(id, token)
+                    if (bytes != null && bytes.size >= 28) {
+                        downloaded.add(RemoteDriveEncryptedFile(id, name, bytes))
+                    } else failures++
                 }
             }
-            DriveRemoteSyncResult.Success(
-                folderId = folderId,
-                downloadedFiles = downloaded
-            )
+            DriveRemoteSyncResult.Success(folderIds.firstOrNull().orEmpty(), downloaded, failures)
         } catch (ex: Exception) {
             DriveRemoteSyncResult.Unavailable(ex.message ?: "Unable to sync Google Drive 'Encrypz' folder")
         }
     }
+
+    private fun listDriveFiles(query: String, accessToken: String): List<JSONObject> =
+        DrivePages.collect { pageToken ->
+            val page = pageToken?.let { "&pageToken=" + URLEncoder.encode(it, "UTF-8") }.orEmpty()
+            val url = "$DRIVE_FILES_API?q=${URLEncoder.encode(query, "UTF-8")}" +
+                "&spaces=drive&fields=nextPageToken,files(id,name,size)&pageSize=100$page"
+            val json = executeJsonGet(url, accessToken)
+            val array = json.optJSONArray("files") ?: JSONArray()
+            DrivePages.Page((0 until array.length()).map { array.getJSONObject(it) },
+                json.optString("nextPageToken").takeIf { it.isNotBlank() })
+        }
 
     /**
      * Deletes an encrypted .enc file from Google Drive when permanently deleted in Encrypz.

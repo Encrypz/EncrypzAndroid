@@ -35,7 +35,7 @@ object AppNotifications {
         }
     }
 
-    fun show(context: Context, message: String, isError: Boolean = false) {
+    fun showTransfer(context: Context, message: String, isError: Boolean = false) {
         if (message.isBlank() || Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
@@ -54,8 +54,4 @@ object AppNotifications {
         NotificationManagerCompat.from(context).notify(nextId++, notification)
     }
 
-    fun isTransferStatus(message: String): Boolean {
-        val normalized = message.lowercase()
-        return listOf("upload", "download", "import", "sync").any(normalized::contains)
-    }
 }

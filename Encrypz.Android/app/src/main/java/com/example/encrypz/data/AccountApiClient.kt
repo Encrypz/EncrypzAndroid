@@ -63,8 +63,10 @@ object AccountApiClient {
         }
         if (!exists && password.length < 12) throw AccountError("Use at least 12 characters for your account password.")
         val salt = if (exists) VaultCrypto.fromHex(status.getString("passwordSaltHex")) else VaultCrypto.generateSalt()
-        val wrapping = VaultCrypto.deriveWrappingKey(password, salt)
-        val proof = VaultCrypto.accountProof(wrapping)
+        val version = if (exists) status.getInt("credentialVersion") else 2
+        require(version == 1 || version == 2) { "Update Encrypz to restore this account." }
+        val wrapping = if (version == 1) VaultCrypto.deriveSessionKeyFast(password, salt) else VaultCrypto.deriveWrappingKey(password, salt)
+        val proof = if (version == 1) VaultCrypto.computePasswordVerifierHex(password, salt) else VaultCrypto.accountProof(wrapping)
         val body = JSONObject().put("proof", proof)
         if (!exists) {
             body.put("passwordSaltHex", VaultCrypto.toHex(salt))
@@ -74,6 +76,6 @@ object AccountApiClient {
         if (!email.equals(result.getString("email"), ignoreCase = true)) throw AccountError("Google account does not match the selected account.")
         return MongoAtlasClient.MongoVaultUserRecord(email, result.getString("passwordSaltHex"), proof,
             result.getString("wrappedVaultKeyHex"), pinVerifierHex = local?.takeIf { it.passwordSaltHex == result.getString("passwordSaltHex") }?.pinVerifierHex,
-            credentialVersion = 2)
+            credentialVersion = result.getInt("credentialVersion"))
     }
 }

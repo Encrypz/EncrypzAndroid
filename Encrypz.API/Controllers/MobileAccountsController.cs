@@ -16,14 +16,16 @@ public sealed class MobileAccountsController(MobileGoogleIdentity google, IMobil
 
     [HttpGet]
     public Task<IActionResult> Lookup(CancellationToken ct) => Run(async identity => {
-        var account = await store.Find(identity.Subject, ct);
-        return Ok(new { exists = account != null, passwordSaltHex = account?.PasswordSaltHex, credentialVersion = 2 });
+        var account = await store.Find(identity.Subject, ct) ?? await store.FindLegacy(identity.Email, ct);
+        return Ok(new { exists = account != null, passwordSaltHex = account?.PasswordSaltHex, credentialVersion = account?.CredentialVersion ?? 2 });
     }, ct);
 
     [HttpPost("register")]
     public Task<IActionResult> Register(Credentials input, CancellationToken ct) => Run(async identity => {
         if (!Hex(input.Proof, 64) || !Hex(input.PasswordSaltHex, 64) || !Hex(input.WrappedVaultKeyHex, 120))
             return BadRequest(new { message = "Invalid account credentials." });
+        if (await store.Find(identity.Subject, ct) != null || await store.FindLegacy(identity.Email, ct) != null)
+            return Conflict(new { message = "Account already exists. Sign in to restore its original key." });
         var account = new MobileAccount {
             Subject = identity.Subject, Email = identity.Email,
             PasswordSaltHex = input.PasswordSaltHex!, WrappedVaultKeyHex = input.WrappedVaultKeyHex!,
@@ -37,9 +39,17 @@ public sealed class MobileAccountsController(MobileGoogleIdentity google, IMobil
     [HttpPost("login")]
     public Task<IActionResult> Login(Credentials input, CancellationToken ct) => Run(async identity => {
         if (!Hex(input.Proof, 64)) return BadRequest();
-        var account = await store.Find(identity.Subject, ct);
+        var account = await store.Find(identity.Subject, ct) ?? await store.FindLegacy(identity.Email, ct);
         if (account == null) return NotFound();
         if (!AccountProof.Verify(input.Proof, account)) return Unauthorized();
+        if (string.IsNullOrEmpty(account.Subject)) {
+            // Adopt legacy key only after both Google ownership and password proof are verified.
+            account.Subject = identity.Subject;
+            if (!await store.Create(account, ct)) {
+                account = await store.Find(identity.Subject, ct);
+                if (account == null || !AccountProof.Verify(input.Proof, account)) return Unauthorized();
+            }
+        }
         return Ok(new { account.Email, account.PasswordSaltHex, account.WrappedVaultKeyHex, account.CredentialVersion });
     }, ct);
 
