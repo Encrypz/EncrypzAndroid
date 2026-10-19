@@ -569,6 +569,13 @@ fun VaultFilePreviewSection(
 
             // Main Visual Preview Body
             when {
+                file.isPlayableMedia -> {
+                    Button(onClick = onOpenFullScreen) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (file.category == VaultCategoryFilter.VIDEOS) "Play video" else "Play audio")
+                    }
+                }
                 imageBitmap != null -> {
                     Box(
                         modifier = Modifier
@@ -688,6 +695,23 @@ fun VaultFileFullScreenDialog(
     onDismiss: () -> Unit,
     onCopyText: (String) -> Unit
 ) {
+    if (file.isPlayableMedia) {
+        Dialog(onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                Box(Modifier.fillMaxSize()) {
+                    VaultMediaPlayer(file, viewModel)
+                    IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close player", tint = Color.White)
+                    }
+                    Text(file.cleanFileName, color = Color.White,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(20.dp),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        return
+    }
     val imageBitmap = rememberDecryptedImageBitmap(
         file = file,
         viewModel = viewModel,
