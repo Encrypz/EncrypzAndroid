@@ -322,6 +322,7 @@ fun VaultScreen(
                 rawBytes = picked.rawBytes,
                 thumbnailBytes = picked.thumbnailBytes,
                 originalSizeBytes = picked.originalSizeBytes,
+                sourceCreatedAtMillis = sourceFileDate(context, uri),
                 context = context,
                 autoSaveToGoogleDrive = true
             )
@@ -698,9 +699,8 @@ fun VaultScreen(
 
     selectedPhotoId?.let { photoId ->
         val photos = remember(state.files) {
-            val parser = java.text.SimpleDateFormat("MMM d, yyyy", java.util.Locale.US)
             state.files.filter { !it.isDeleted && it.category == VaultCategoryFilter.PHOTOS }
-                .sortedByDescending { runCatching { parser.parse(it.uploadedAt)?.time }.getOrNull() ?: 0L }
+                .sortedByDescending { it.sortDate }
         }
         if (photos.any { it.id == photoId }) {
             PhotoViewer(photos = photos, initialId = photoId, viewModel = viewModel,

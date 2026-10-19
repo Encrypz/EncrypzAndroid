@@ -73,7 +73,9 @@ object GoogleDriveSyncManager {
     data class RemoteDriveEncryptedFile(
         val driveFileId: String,
         val name: String,
-        val encryptedBytes: ByteArray
+        val encryptedBytes: ByteArray,
+        val encryptedCreationDate: String = "",
+        val driveCreatedTime: String = ""
     )
 
     sealed class DriveRemoteSyncResult {
@@ -221,7 +223,8 @@ object GoogleDriveSyncManager {
         context: Context,
         accountEmail: String,
         file: VaultFileEntry,
-        encryptedDriveName: String
+        encryptedDriveName: String,
+        encryptedCreationDate: String = ""
     ): DriveUploadResult = withContext(Dispatchers.IO) {
         val cleanEmail = accountEmail.trim()
         val safeEncryptedName = encryptedDriveName
@@ -234,7 +237,7 @@ object GoogleDriveSyncManager {
             )
         }
 
-        // Uploads NEVER prompt for permission — they reuse the permission granted at Login.
+        // Uploads NEVER prompt for permission â€” they reuse the permission granted at Login.
         var token = when (val res = resolveDriveAccessToken(context, cleanEmail, allowInteractiveLoopback = false)) {
             is TokenResolution.Token -> res.accessToken
             is TokenResolution.AuthorizationRequired, is TokenResolution.ConsentRequired -> {
@@ -262,6 +265,7 @@ object GoogleDriveSyncManager {
                 encryptedFileName = safeEncryptedName,
                 encryptedPayload = file.encryptedPayload,
                 ivHex = file.ivHex,
+                encryptedCreationDate = encryptedCreationDate,
                 existingDriveId = file.driveFileId?.takeIf { !it.startsWith("content://") }
             )
 
@@ -297,6 +301,7 @@ object GoogleDriveSyncManager {
                         encryptedFileName = safeEncryptedName,
                         encryptedPayload = file.encryptedPayload,
                         ivHex = file.ivHex,
+                        encryptedCreationDate = encryptedCreationDate,
                         existingDriveId = file.driveFileId?.takeIf { !it.startsWith("content://") }
                     )
 
@@ -365,7 +370,9 @@ object GoogleDriveSyncManager {
                     // Identical filenames are valid distinct files. Deduplicate only by Drive ID.
                     val bytes = downloadDriveFileBytes(id, token)
                     if (bytes != null && bytes.size >= 28) {
-                        downloaded.add(RemoteDriveEncryptedFile(id, name, bytes))
+                        downloaded.add(RemoteDriveEncryptedFile(id, name, bytes,
+                            item.optJSONObject("appProperties")?.optString("encCreated").orEmpty(),
+                            item.optString("createdTime")))
                     } else failures++
                 }
             }
@@ -379,7 +386,7 @@ object GoogleDriveSyncManager {
         DrivePages.collect { pageToken ->
             val page = pageToken?.let { "&pageToken=" + URLEncoder.encode(it, "UTF-8") }.orEmpty()
             val url = "$DRIVE_FILES_API?q=${URLEncoder.encode(query, "UTF-8")}" +
-                "&spaces=drive&fields=nextPageToken,files(id,name,size)&pageSize=100$page"
+                "&spaces=drive&fields=nextPageToken,files(id,name,size,createdTime,appProperties)&pageSize=100$page"
             val json = executeJsonGet(url, accessToken)
             val array = json.optJSONArray("files") ?: JSONArray()
             DrivePages.Page((0 until array.length()).map { array.getJSONObject(it) },
@@ -549,11 +556,13 @@ object GoogleDriveSyncManager {
         encryptedFileName: String,
         encryptedPayload: ByteArray,
         ivHex: String,
-        existingDriveId: String?
+        existingDriveId: String?,
+        encryptedCreationDate: String
     ): String {
         val boundary = "===encrypz_vault_boundary_${System.currentTimeMillis()}==="
         val metadataJson = JSONObject().apply {
             put("name", encryptedFileName)
+            if (encryptedCreationDate.isNotBlank()) put("appProperties", JSONObject().put("encCreated", encryptedCreationDate))
             if (existingDriveId.isNullOrBlank()) {
                 put("parents", JSONArray().put(folderId))
             }

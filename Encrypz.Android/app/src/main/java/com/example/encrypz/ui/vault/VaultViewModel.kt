@@ -73,6 +73,7 @@ data class VaultFileEntry(
     val folderId: String? = null,
     val sizeBytes: Long,
     val uploadedAt: String,
+    val createdAtMillis: Long? = null,
     val googleAccountEmail: String,
     val encryptedPayload: ByteArray,
     val encryptedThumbnail: ByteArray? = null,
@@ -153,7 +154,7 @@ data class VaultUiState(
                 (if (searchQuery.isNotBlank() || selectedCategory != VaultCategoryFilter.ALL) true else file.folderId == currentFolderId) &&
                 (selectedCategory == VaultCategoryFilter.ALL || file.category == selectedCategory) &&
                 (searchQuery.isBlank() || file.name.contains(searchQuery, ignoreCase = true))
-        }
+        }.sortedByDescending { it.sortDate }
 
     val deletedFolders: List<VaultFolder>
         get() = folders.filter { it.isDeleted }
@@ -527,6 +528,8 @@ class VaultViewModel : ViewModel() {
             )
         }
 
+        recoverFileDates(context)
+
         // Request Google Drive permission if not yet granted, and ensure the "Encrypz" folder exists in Google Drive
         if (context != null) {
             val driveEmail = _uiState.value.connectedGoogleEmail
@@ -548,7 +551,7 @@ class VaultViewModel : ViewModel() {
     }
 
     /**
-     * Configures or updates the 4–6 digit Quick-Unlock PIN after the user has completed their first login.
+     * Configures or updates the 4â€“6 digit Quick-Unlock PIN after the user has completed their first login.
      */
     fun setupUnlockPin(pin: String, context: Context? = null): Boolean {
         val cleanPin = pin.trim()
@@ -582,7 +585,7 @@ class VaultViewModel : ViewModel() {
                 hasCompletedFirstLogin = true,
                 isPinSet = true,
                 promptPinSetupAfterFirstLogin = false,
-                statusBannerMessage = "Quick-Unlock PIN saved — you can now unlock your vault with your PIN"
+                statusBannerMessage = "Quick-Unlock PIN saved â€” you can now unlock your vault with your PIN"
             )
         }
         return true
@@ -659,6 +662,7 @@ class VaultViewModel : ViewModel() {
             )
         }
 
+        recoverFileDates(context)
         if (context != null && driveEmailForPin.isNotBlank()) {
             requestGoogleDrivePermission(context, driveEmailForPin)
         }
@@ -683,7 +687,7 @@ class VaultViewModel : ViewModel() {
             it.copy(
                 isPinSet = false,
                 promptPinSetupAfterFirstLogin = false,
-                statusBannerMessage = "Quick-Unlock PIN removed — Master Password required on next unlock"
+                statusBannerMessage = "Quick-Unlock PIN removed â€” Master Password required on next unlock"
             )
         }
     }
@@ -703,9 +707,17 @@ class VaultViewModel : ViewModel() {
                 breadcrumbs = listOf(BreadcrumbItem(null, "My Vault")),
                 searchQuery = "",
                 selectedCategory = VaultCategoryFilter.ALL,
-                statusBannerMessage = "Vault locked — keys cleared from active session"
+                statusBannerMessage = "Vault locked â€” keys cleared from active session"
             )
         }
+    }
+
+    private fun recoverFileDates(context: Context?) {
+        _uiState.update { state -> state.copy(files = state.files.map { file ->
+            if (file.createdAtMillis != null) file else file.copy(createdAtMillis =
+                decryptFileBytes(file)?.let { embeddedCreationDate(it, context, file.name) } ?: file.sortDate)
+        }) }
+        persistIfPossible(context)
     }
 
     fun dismissBanner() {
@@ -792,7 +804,8 @@ class VaultViewModel : ViewModel() {
         thumbnailBytes: ByteArray? = null,
         originalSizeBytes: Long = rawBytes.size.toLong(),
         context: Context? = null,
-        autoSaveToGoogleDrive: Boolean = true
+        autoSaveToGoogleDrive: Boolean = true,
+        sourceCreatedAtMillis: Long? = null
     ) {
         if (context != null) {
             ensureLocalStorageLoaded(context)
@@ -844,6 +857,8 @@ class VaultViewModel : ViewModel() {
             folderId = _uiState.value.currentFolderId,
             sizeBytes = finalSizeBytes,
             uploadedAt = currentFormattedDate(),
+            createdAtMillis = embeddedCreationDate(alreadyDecryptedPlaintext ?: rawBytes, context, safeName)
+                ?: sourceCreatedAtMillis?.takeIf { it > 0 } ?: System.currentTimeMillis(),
             googleAccountEmail = _uiState.value.connectedGoogleEmail.ifBlank { "Google Drive Vault" },
             encryptedPayload = finalEncryptedPayload,
             encryptedThumbnail = finalEncryptedThumb,
@@ -922,7 +937,8 @@ class VaultViewModel : ViewModel() {
 
         viewModelScope.launch {
             try {
-                when (val result = GoogleDriveSyncManager.uploadEncryptedFileToDrive(context, accountEmail, targetFile, encryptedDriveName)) {
+                when (val result = GoogleDriveSyncManager.uploadEncryptedFileToDrive(context, accountEmail, targetFile, encryptedDriveName,
+                    VaultCrypto.toHex(VaultCrypto.encryptPayload(targetFile.sortDate.toString().encodeToByteArray(), activeVaultKey)))) {
                     is GoogleDriveSyncManager.DriveUploadResult.UploadedToDriveApi -> {
                         _uiState.update { state ->
                             state.copy(
@@ -947,13 +963,13 @@ class VaultViewModel : ViewModel() {
                     }
 
                     is GoogleDriveSyncManager.DriveUploadResult.NeedsUserConsent -> {
-                        // Never prompt during upload — keep encrypted locally; it syncs after the next login grant
+                        // Never prompt during upload â€” keep encrypted locally; it syncs after the next login grant
                         _uiState.update { state ->
                             state.copy(
                                 files = state.files.map {
                                     if (it.id == fileId) it.copy(driveSyncState = DriveSyncState.LOCAL_ENCRYPTED) else it
                                 },
-                                statusBannerMessage = "\"${targetFile.name}\" encrypted locally — will be saved to Google Drive 'Encrypz' after Drive permission is granted at login"
+                                statusBannerMessage = "\"${targetFile.name}\" encrypted locally â€” will be saved to Google Drive 'Encrypz' after Drive permission is granted at login"
                             )
                         }
                         persistIfPossible(context)
@@ -1122,6 +1138,10 @@ class VaultViewModel : ViewModel() {
                             folderId = null,
                             sizeBytes = decrypted.size.toLong(),
                             uploadedAt = currentFormattedDate(),
+                            createdAtMillis = runCatching { VaultCrypto.decryptPayload(
+                                VaultCrypto.fromHex(remote.encryptedCreationDate), syncKey).decodeToString().toLong().takeIf { it > 0 }
+                            }.getOrNull() ?: embeddedCreationDate(decrypted, context, restoredName)
+                                ?: parseVaultDate(remote.driveCreatedTime, "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"),
                             googleAccountEmail = email,
                             encryptedPayload = remote.encryptedBytes,
                             encryptedThumbnail = encThumb,

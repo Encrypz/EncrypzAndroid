@@ -224,6 +224,7 @@ object LocalVaultStorage {
                     put("folderId", file.folderId ?: JSONObject.NULL)
                     put("sizeBytes", file.sizeBytes)
                     put("uploadedAt", file.uploadedAt)
+                    file.createdAtMillis?.let { put("createdAtMillis", it) }
                     put("googleAccountEmail", file.googleAccountEmail)
                     put("ivHex", file.ivHex)
                     put("isDeleted", file.isDeleted)
@@ -304,6 +305,7 @@ object LocalVaultStorage {
                         folderId = folderId,
                         sizeBytes = obj.optLong("sizeBytes", encryptedPayload.size.toLong()),
                         uploadedAt = obj.optString("uploadedAt", ""),
+                        createdAtMillis = obj.optLong("createdAtMillis", 0).takeIf { it > 0 },
                         googleAccountEmail = obj.optString("googleAccountEmail", ""),
                         encryptedPayload = encryptedPayload,
                         encryptedThumbnail = encryptedThumbnail,

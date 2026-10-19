@@ -40,7 +40,7 @@ internal fun PhotoViewer(photos: List<VaultFileEntry>, initialId: String, viewMo
             Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
                 Column(Modifier.weight(1f)) {
-                    Text(current.uploadedAt, color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text(current.creationDateLabel, color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Text("${pager.currentPage + 1} of ${photos.size}", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
                 }
                 Box {

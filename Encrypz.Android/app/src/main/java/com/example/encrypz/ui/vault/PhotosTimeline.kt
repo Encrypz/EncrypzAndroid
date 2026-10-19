@@ -16,8 +16,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.example.encrypz.theme.*
-import java.text.SimpleDateFormat
-import java.util.Locale
 
 @Composable
 internal fun PhotosTimeline(state: VaultUiState, viewModel: VaultViewModel,
@@ -25,15 +23,14 @@ internal fun PhotosTimeline(state: VaultUiState, viewModel: VaultViewModel,
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("All") }
     val files = remember(state.files, query, filter) {
-        val parser = SimpleDateFormat("MMM d, yyyy", Locale.US)
         state.files.filter { !it.isDeleted &&
             (it.category == VaultCategoryFilter.PHOTOS || it.category == VaultCategoryFilter.VIDEOS) &&
             (filter != "Photos" || it.category == VaultCategoryFilter.PHOTOS) &&
             (filter != "Videos" || it.category == VaultCategoryFilter.VIDEOS) &&
             it.cleanFileName.contains(query, ignoreCase = true)
-        }.sortedByDescending { runCatching { parser.parse(it.uploadedAt)?.time }.getOrNull() ?: 0L }
+        }.sortedByDescending { it.sortDate }
     }
-    val groups = remember(files) { files.groupBy { it.uploadedAt.ifBlank { "Unknown date" } } }
+    val groups = remember(files) { files.groupBy { it.creationDateLabel } }
     LazyVerticalGrid(columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -51,8 +48,6 @@ internal fun PhotosTimeline(state: VaultUiState, viewModel: VaultViewModel,
                         FilterChip(selected = filter == label, onClick = { filter = label }, label = { Text(label) })
                     }
                 }
-                Text("${files.size} items ? By upload date", style = MaterialTheme.typography.bodySmall,
-                    color = EncrypzMuted, modifier = Modifier.padding(bottom = 8.dp))
             }
         }
         if (files.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
