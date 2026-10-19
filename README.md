@@ -27,6 +27,7 @@ This repository also contains a React web client. The Android and web clients cu
 ### Android vault
 
 - Encrypt file contents locally with AES-256-GCM before uploading.
+- Select up to **30 files per batch**; each selected file is encrypted and queued for upload.
 - Automatically upload encrypted `.enc` files to the **Encrypz** folder in Google Drive when authorization and connectivity are available.
 - Encrypt uploaded filenames and preserve creation dates in encrypted Drive metadata for new uploads.
 - Restore uploaded files using the original account and vault key.
@@ -346,7 +347,7 @@ If an older installation uses a four- or five-digit PIN, use **Use master passwo
 - **Folder organization and recycle-bin flags are local on Android.** Restored files may appear in the root rather than their former local folders.
 - **Permanent deletion depends on Drive access.** Individual file deletion and emptying the recycle bin attempt remote deletion; failed remote deletion can leave a copy available for later synchronization. Local deletion messages are not proof of secure physical erasure.
 - **Creation dates are best effort.** Embedded photo/video dates take priority. Where absent, available provider metadata or saved upload dates are used. Some old files do not contain enough metadata to recover their original creation date.
-- **Android imports currently read at most 15 MiB into memory.** Larger selected files can be truncated by the current reader. Do not use this build to archive files above that limit; verify exports against originals.
+- **Android imports support up to 30 files per batch and 15 MiB per file.** Larger files are rejected without saving partial content. A failed file does not stop the rest of the batch.
 - **Google authorization is required.** Upload attempts do not intentionally prompt for consent each time; denied access must be repaired through login or Security.
 - **PIN setup remains optional.** If no PIN is configured, use the master password to unlock. Any PIN that is configured must be six digits.
 - **A deployed account service is required for Android account creation and cross-device verification.** A MongoDB connection string alone is not an Android backend.

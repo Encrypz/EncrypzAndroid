@@ -123,33 +123,13 @@ fun readPickedUriForVault(context: Context, uri: Uri): PickedDeviceFileData {
         }
     } catch (_: Exception) {}
 
-    val maxBytes = 15 * 1024 * 1024 // 15 MB in-memory cap
-    var rawBytes = ByteArray(0)
-    try {
-        context.contentResolver.openInputStream(uri)?.use { stream ->
-            val out = ByteArrayOutputStream()
-            val buffer = ByteArray(16 * 1024)
-            var totalRead = 0
-            while (true) {
-                val read = stream.read(buffer)
-                if (read <= 0) break
-                val toWrite = minOf(read, maxBytes - totalRead)
-                if (toWrite > 0) {
-                    out.write(buffer, 0, toWrite)
-                    totalRead += toWrite
-                }
-                if (totalRead >= maxBytes) break
-            }
-            rawBytes = out.toByteArray()
-        }
-    } catch (_: Exception) {}
-
-    if (rawBytes.isEmpty()) {
-        rawBytes = "Encrypted Android File ($resolvedName)".encodeToByteArray()
+    if (originalSize > MAX_IMPORT_BYTES) {
+        throw java.io.IOException("$resolvedName exceeds the 15 MiB file limit.")
     }
-    if (originalSize <= 0L) {
-        originalSize = rawBytes.size.toLong()
-    }
+    val rawBytes = context.contentResolver.openInputStream(uri)?.use { stream ->
+        readImportBytes(stream)
+    } ?: throw java.io.IOException("Unable to open $resolvedName.")
+    originalSize = rawBytes.size.toLong()
 
     val ext = resolvedName.substringAfterLast('.', "").lowercase(Locale.ROOT)
     val mimeType = context.contentResolver.getType(uri)?.lowercase(Locale.ROOT) ?: ""

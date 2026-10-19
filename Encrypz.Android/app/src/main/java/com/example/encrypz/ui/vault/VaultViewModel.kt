@@ -13,6 +13,11 @@ import com.example.encrypz.data.LocalVaultStorage
 import com.example.encrypz.data.AccountApiClient
 import com.example.encrypz.data.MongoAtlasClient.MongoVaultUserRecord
 import com.example.encrypz.drive.GoogleDriveSyncManager
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -135,6 +140,7 @@ data class VaultUiState(
     val files: List<VaultFileEntry> = emptyList(),
     val statusBannerMessage: String? = null,
     val isSyncingWithDrive: Boolean = false,
+    val isImportingFiles: Boolean = false,
     val pendingDriveConsentIntent: Intent? = null,
     val pendingDriveConsentFileId: String? = null,
     val pendingDriveSaverFileId: String? = null,
@@ -802,6 +808,43 @@ class VaultViewModel : ViewModel() {
      * saves the encrypted .enc blob to local storage, and directly uploads the encrypted .enc file
      * into the `Encrypz` folder on the user's Google Drive.
      */
+    fun importSelectedFiles(context: Context, uris: List<Uri>) {
+        val selected = uris.distinct()
+        if (selected.isEmpty()) return
+        if (!validImportCount(selected.size) || _uiState.value.isImportingFiles) {
+            com.example.encrypz.AppNotifications.record(context,
+                "Select up to $MAX_IMPORT_FILES files and wait for the current batch to finish.", true)
+            return
+        }
+        ensureLocalStorageLoaded(context)
+        val owner = _uiState.value.connectedGoogleEmail
+        _uiState.update { it.copy(isImportingFiles = true) }
+        viewModelScope.launch {
+            try {
+                for (uri in selected) {
+                    val unlocked = _uiState.first { it.isVaultUnlocked || it.connectedGoogleEmail != owner }
+                    if (unlocked.connectedGoogleEmail != owner) break
+                    try {
+                        val (picked, sourceDate) = withContext(Dispatchers.IO) {
+                            readPickedUriForVault(context, uri) to sourceFileDate(context, uri)
+                        }
+                        val ready = _uiState.first { it.isVaultUnlocked || it.connectedGoogleEmail != owner }
+                        if (ready.connectedGoogleEmail != owner) break
+                        encryptAndAddFile(picked.fileName, picked.rawBytes, picked.thumbnailBytes,
+                            picked.originalSizeBytes, context, sourceCreatedAtMillis = sourceDate)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        com.example.encrypz.AppNotifications.showTransfer(context,
+                            "Upload skipped: ${error.message ?: "Unable to read the selected file."}", true)
+                    }
+                }
+            } finally {
+                _uiState.update { it.copy(isImportingFiles = false) }
+            }
+        }
+    }
+
     fun encryptAndAddFile(
         fileName: String,
         rawBytes: ByteArray,
@@ -917,6 +960,7 @@ class VaultViewModel : ViewModel() {
      * Directly uploads a specific AES-256-GCM encrypted .enc file from the vault into the `Encrypz`
      * folder on the user's Google Drive via the Google Drive API v3.
      */
+    private val driveUploadMutex = Mutex()
     private val activeDriveUploads = ConcurrentHashMap.newKeySet<String>()
 
     fun saveFileToGoogleDrive(
@@ -927,6 +971,8 @@ class VaultViewModel : ViewModel() {
         if (!_uiState.value.isVaultUnlocked) return
         val targetFile = _uiState.value.files.find { it.id == fileId } ?: return
         val encryptedDriveName = VaultFileNames.encrypt(targetFile.name, activeVaultKey)
+        val encryptedCreationDate = VaultCrypto.toHex(VaultCrypto.encryptPayload(
+            targetFile.sortDate.toString().encodeToByteArray(), activeVaultKey))
         if (!activeDriveUploads.add(fileId)) return
         val accountEmail = _uiState.value.connectedGoogleEmail
             .ifBlank { GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty() }
@@ -941,8 +987,11 @@ class VaultViewModel : ViewModel() {
 
         viewModelScope.launch {
             try {
-                when (val result = GoogleDriveSyncManager.uploadEncryptedFileToDrive(context, accountEmail, targetFile, encryptedDriveName,
-                    VaultCrypto.toHex(VaultCrypto.encryptPayload(targetFile.sortDate.toString().encodeToByteArray(), activeVaultKey)))) {
+                val result = driveUploadMutex.withLock {
+                    GoogleDriveSyncManager.uploadEncryptedFileToDrive(context, accountEmail, targetFile,
+                        encryptedDriveName, encryptedCreationDate)
+                }
+                when (result) {
                     is GoogleDriveSyncManager.DriveUploadResult.UploadedToDriveApi -> {
                         _uiState.update { state ->
                             state.copy(

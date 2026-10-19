@@ -311,22 +311,30 @@ fun VaultScreen(
         viewModel.navigateUp()
     }
 
-    // Native Android Document Picker to encrypt real files, generate visual previews, and save .enc to Google Drive
+    var pendingImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var importSelectionError by remember { mutableStateOf<String?>(null) }
     val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            val picked = readPickedUriForVault(context, uri)
-            viewModel.encryptAndAddFile(
-                fileName = picked.fileName,
-                rawBytes = picked.rawBytes,
-                thumbnailBytes = picked.thumbnailBytes,
-                originalSizeBytes = picked.originalSizeBytes,
-                sourceCreatedAtMillis = sourceFileDate(context, uri),
-                context = context,
-                autoSaveToGoogleDrive = true
-            )
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        val selected = uris.distinct()
+        if (selected.isNotEmpty() && !validImportCount(selected.size)) {
+            importSelectionError = "You selected ${selected.size} files. Select up to $MAX_IMPORT_FILES files at a time. No files were added."
+        } else {
+            pendingImportUris = selected
         }
+    }
+    // The system picker backgrounds the app. Wait for PIN unlock before importing.
+    androidx.compose.runtime.LaunchedEffect(pendingImportUris, state.isVaultUnlocked) {
+        if (state.isVaultUnlocked && pendingImportUris.isNotEmpty()) {
+            viewModel.importSelectedFiles(context, pendingImportUris)
+            pendingImportUris = emptyList()
+        }
+    }
+    if (state.isVaultUnlocked && importSelectionError != null) {
+        AlertDialog(onDismissRequest = { importSelectionError = null },
+            title = { Text("Maximum 30 files") },
+            text = { Text(importSelectionError.orEmpty()) },
+            confirmButton = { TextButton(onClick = { importSelectionError = null }) { Text("OK") } })
     }
 
     Scaffold(
@@ -652,12 +660,12 @@ fun VaultScreen(
 
                 AddActionRowCard(
                     icon = Icons.Default.UploadFile,
-                    title = "Encrypt & Save File to Google Drive",
-                    subtitle = "Pick any photo, PDF, video, or document to encrypt (.enc) & save to Drive",
+                    title = if (state.isImportingFiles) "Preparing files..." else "Upload files to Google Drive",
+                    subtitle = "Select up to 30 photos, videos, or documents (15 MiB per file)",
                     tint = EncrypzBlue,
                     onClick = {
                         showAddSheet = false
-                        filePickerLauncher.launch("*/*")
+                        if (!state.isImportingFiles) filePickerLauncher.launch("*/*")
                     }
                 )
 
