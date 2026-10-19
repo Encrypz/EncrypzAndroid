@@ -125,7 +125,7 @@ data class VaultUiState(
     val isPinSet: Boolean = false,
     val promptPinSetupAfterFirstLogin: Boolean = false,
     val screenshotProtectionEnabled: Boolean = true,
-    val autoLockTimeout: AutoLockTimeout = AutoLockTimeout.FIVE_MINUTES,
+    val autoLockTimeout: AutoLockTimeout = AutoLockTimeout.IMMEDIATE,
     val currentFolderId: String? = null,
     val breadcrumbs: List<BreadcrumbItem> = listOf(BreadcrumbItem(null, "My Vault")),
     val searchQuery: String = "",
@@ -551,11 +551,11 @@ class VaultViewModel : ViewModel() {
     }
 
     /**
-     * Configures or updates the 4â€“6 digit Quick-Unlock PIN after the user has completed their first login.
+     * Configures or updates the 6 digit Quick-Unlock PIN after the user has completed their first login.
      */
     fun setupUnlockPin(pin: String, context: Context? = null): Boolean {
         val cleanPin = pin.trim()
-        if (cleanPin.length !in 4..6 || !cleanPin.all { it.isDigit() }) {
+        if (cleanPin.length != 6 || !cleanPin.all { it in '0'..'9' }) {
             return false
         }
         val emailKey = _uiState.value.connectedGoogleEmail
@@ -596,7 +596,7 @@ class VaultViewModel : ViewModel() {
      */
     fun unlockWithPin(pin: String, context: Context? = null): Boolean {
         val cleanPin = pin.trim()
-        if (cleanPin.length !in 4..6 || !cleanPin.all { it.isDigit() }) {
+        if (cleanPin.length != 6 || !cleanPin.all { it in '0'..'9' }) {
             _uiState.update {
                 it.copy(
                     isVaultUnlocked = false,
@@ -696,6 +696,10 @@ class VaultViewModel : ViewModel() {
         _uiState.update {
             it.copy(promptPinSetupAfterFirstLogin = false)
         }
+    }
+
+    fun onAppBackgrounded() {
+        if (_uiState.value.isVaultUnlocked) lockVault()
     }
 
     fun lockVault() {
@@ -1374,8 +1378,8 @@ class VaultViewModel : ViewModel() {
     fun setAutoLockTimeout(timeout: AutoLockTimeout) {
         _uiState.update {
             it.copy(
-                autoLockTimeout = timeout,
-                statusBannerMessage = "Auto-lock set to: ${timeout.label}"
+                autoLockTimeout = AutoLockTimeout.IMMEDIATE,
+                statusBannerMessage = "Vault locks immediately when you leave the app."
             )
         }
     }

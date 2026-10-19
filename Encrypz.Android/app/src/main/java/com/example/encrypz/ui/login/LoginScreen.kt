@@ -289,8 +289,8 @@ fun LoginScreen(
     val handlePinUnlock = {
         errorMessage = null
         val trimmedPin = pinInput.trim()
-        if (trimmedPin.length !in 4..6 || !trimmedPin.all { it.isDigit() }) {
-            errorMessage = "Please enter your 4 to 6 digit PIN."
+        if (trimmedPin.length != 6 || !trimmedPin.all { it in '0'..'9' }) {
+            errorMessage = "Please enter your 6 digit PIN."
         } else {
             val unlocked = onUnlockWithPin?.invoke(trimmedPin) ?: false
             if (unlocked) {
@@ -306,8 +306,8 @@ fun LoginScreen(
         errorMessage = null
         val cleanPin = newPinInput.trim()
         val cleanConfirm = confirmNewPinInput.trim()
-        if (cleanPin.length !in 4..6 || !cleanPin.all { it.isDigit() }) {
-            errorMessage = "PIN must be 4 to 6 digits."
+        if (cleanPin.length != 6 || !cleanPin.all { it in '0'..'9' }) {
+            errorMessage = "PIN must be 6 digits."
         } else if (cleanPin != cleanConfirm) {
             errorMessage = "PINs do not match. Please re-enter."
         } else {
@@ -316,7 +316,7 @@ fun LoginScreen(
                 showPinSetupStepAfterFirstLogin = false
                 onLoginSuccess()
             } else {
-                errorMessage = "Unable to save PIN. Please enter 4 to 6 digits."
+                errorMessage = "Unable to save PIN. Please enter 6 digits."
             }
         }
     }
@@ -457,11 +457,11 @@ fun LoginScreen(
                         Text(
                             text = when {
                                 showPinSetupStepAfterFirstLogin ->
-                                    "First login complete! Set a 4 to 6 digit PIN so you can unlock your vault quickly next time."
+                                    "First login complete! Set a 6 digit PIN so you can unlock your vault quickly next time."
                                 isGoogleSignedIn && isCreatingVault ->
                                     "Create a strong master password to register your Encrypz account and encrypt your vault keys."
                                 isGoogleSignedIn && usePinMode && isPinSet ->
-                                    "Enter your 4–6 digit Quick-Unlock PIN to open your encrypted vault."
+                                    "Enter your 6 digit Quick-Unlock PIN to open your encrypted vault."
                                 isGoogleSignedIn ->
                                     "Enter your master password to unlock your encrypted files."
                                 else ->
@@ -476,7 +476,7 @@ fun LoginScreen(
                         if (showPinSetupStepAfterFirstLogin) {
                             // Step shown right after First Login with Master Password to set up Quick-Unlock PIN
                             Text(
-                                text = "New Quick-Unlock PIN (4–6 digits)",
+                                text = "New Quick-Unlock PIN (6 digits)",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = EncrypzMuted,
                                 modifier = Modifier.padding(bottom = 6.dp)
@@ -484,12 +484,12 @@ fun LoginScreen(
                             OutlinedTextField(
                                 value = newPinInput,
                                 onValueChange = { value ->
-                                    val digitsOnly = value.filter { it.isDigit() }.take(6)
+                                    val digitsOnly = value.filter { it in '0'..'9' }.take(6)
                                     newPinInput = digitsOnly
                                     errorMessage = null
                                 },
                                 placeholder = {
-                                    Text("Enter 4 to 6 digit PIN", color = EncrypzSubtleText)
+                                    Text("Enter 6 digit PIN", color = EncrypzSubtleText)
                                 },
                                 leadingIcon = {
                                     Icon(
@@ -529,12 +529,12 @@ fun LoginScreen(
                             OutlinedTextField(
                                 value = confirmNewPinInput,
                                 onValueChange = { value ->
-                                    val digitsOnly = value.filter { it.isDigit() }.take(6)
+                                    val digitsOnly = value.filter { it in '0'..'9' }.take(6)
                                     confirmNewPinInput = digitsOnly
                                     errorMessage = null
                                 },
                                 placeholder = {
-                                    Text("Re-enter 4 to 6 digit PIN", color = EncrypzSubtleText)
+                                    Text("Re-enter 6 digit PIN", color = EncrypzSubtleText)
                                 },
                                 leadingIcon = {
                                     Icon(
@@ -570,7 +570,7 @@ fun LoginScreen(
 
                             Button(
                                 onClick = handleSaveNewPinAfterFirstLogin,
-                                enabled = newPinInput.length in 4..6 && confirmNewPinInput.length in 4..6,
+                                enabled = newPinInput.length == 6 && confirmNewPinInput.length == 6,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(46.dp),
@@ -859,7 +859,7 @@ fun LoginScreen(
 
                                 Button(
                                     onClick = handlePinUnlock,
-                                    enabled = pinInput.length in 4..6,
+                                    enabled = pinInput.length == 6,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(46.dp),
@@ -1264,7 +1264,7 @@ fun LoginScreen(
                                     color = EncrypzText
                                 )
                                 Text(
-                                    text = "After your first login with your master password, you can set a 4 to 6 digit PIN for fast subsequent unlocks.",
+                                    text = "After your first login with your master password, you can set a 6 digit PIN for fast subsequent unlocks.",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }

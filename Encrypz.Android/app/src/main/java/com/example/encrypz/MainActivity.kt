@@ -19,7 +19,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.encrypz.theme.EncrypzTheme
-import com.example.encrypz.ui.vault.AutoLockTimeout
 import com.example.encrypz.ui.vault.VaultViewModel
 
 class MainActivity : ComponentActivity() {
@@ -76,9 +75,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        val currentState = vaultViewModel.uiState.value
-        if (currentState.isVaultUnlocked && currentState.autoLockTimeout == AutoLockTimeout.IMMEDIATE) {
-            vaultViewModel.lockVault()
-        }
+        if (!isChangingConfigurations) vaultViewModel.onAppBackgrounded()
     }
 }

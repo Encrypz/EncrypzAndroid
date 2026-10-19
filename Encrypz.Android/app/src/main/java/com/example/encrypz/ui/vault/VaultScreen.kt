@@ -1120,16 +1120,16 @@ fun VaultScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Enter a 4 to 6 digit PIN to unlock your vault quickly after your first login.",
+                        text = "Enter a 6 digit PIN to unlock your vault quickly after your first login.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
                         value = newPin,
                         onValueChange = {
-                            newPin = it.filter { ch -> ch.isDigit() }.take(6)
+                            newPin = it.filter { ch -> ch in '0'..'9' }.take(6)
                             pinDialogError = null
                         },
-                        label = { Text("New PIN (4–6 digits)") },
+                        label = { Text("New PIN (6 digits)") },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -1146,7 +1146,7 @@ fun VaultScreen(
                     OutlinedTextField(
                         value = confirmPin,
                         onValueChange = {
-                            confirmPin = it.filter { ch -> ch.isDigit() }.take(6)
+                            confirmPin = it.filter { ch -> ch in '0'..'9' }.take(6)
                             pinDialogError = null
                         },
                         label = { Text("Confirm PIN") },
@@ -1175,8 +1175,8 @@ fun VaultScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (newPin.length !in 4..6) {
-                            pinDialogError = "PIN must be 4 to 6 digits."
+                        if (newPin.length != 6) {
+                            pinDialogError = "PIN must be 6 digits."
                         } else if (newPin != confirmPin) {
                             pinDialogError = "PINs do not match."
                         } else {
@@ -1184,7 +1184,7 @@ fun VaultScreen(
                             showPinSetupDialog = false
                         }
                     },
-                    enabled = newPin.length in 4..6 && confirmPin.length in 4..6,
+                    enabled = newPin.length == 6 && confirmPin.length == 6,
                     shape = RoundedCornerShape(100.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue)
                 ) {
@@ -1828,9 +1828,9 @@ private fun SecurityProfileTabContent(
                                 )
                                 Text(
                                     text = if (state.isPinSet) {
-                                        "Active — unlock with your 4–6 digit PIN on login"
+                                        "Active — unlock with your 6 digit PIN on login"
                                     } else {
-                                        "Set a 4–6 digit PIN for fast unlock after first login"
+                                        "Set a 6 digit PIN for fast unlock after first login"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = EncrypzMuted
@@ -1879,37 +1879,16 @@ private fun SecurityProfileTabContent(
                                 modifier = Modifier.size(20.dp)
                             )
                             Text(
-                                text = "Auto-Lock Vault Timeout",
+                                text = "Automatic locking",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = EncrypzText
                             )
                         }
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            AutoLockTimeout.entries.forEach { option ->
-                                val selected = state.autoLockTimeout == option
-                                Surface(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(100.dp))
-                                        .clickable { onSelectAutoLockTimeout(option) },
-                                    shape = RoundedCornerShape(100.dp),
-                                    color = if (selected) EncrypzSecondaryBg else EncrypzInput,
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (selected) EncrypzBlue else EncrypzInputBorder
-                                    )
-                                ) {
-                                    Text(
-                                        text = option.label,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (selected) EncrypzBlueBright else EncrypzMuted
-                                    )
-                                }
-                            }
-                        }
+                        Text(
+                            text = "Immediately when you leave the app. Unlock again when you return.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = EncrypzMuted
+                        )
                     }
                 }
             }

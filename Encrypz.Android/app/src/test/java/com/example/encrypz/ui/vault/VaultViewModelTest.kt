@@ -10,6 +10,24 @@ import org.junit.Test
 class VaultViewModelTest {
 
     @Test
+    fun pinRequiresSixDigitsAndBackgroundLocksImmediately() {
+        val model = VaultViewModel()
+        assertTrue(model.unlockWithMasterPassword("SixDigit#MasterPassword2026", true))
+        for (invalid in listOf("1234", "12345", "1234567", "12345a", "??????")) {
+            assertFalse(model.setupUnlockPin(invalid))
+        }
+        assertTrue(model.setupUnlockPin("012345"))
+        model.setAutoLockTimeout(AutoLockTimeout.FIFTEEN_MINUTES)
+        model.onAppBackgrounded()
+        assertFalse(model.uiState.value.isVaultUnlocked)
+        assertFalse(model.unlockWithPin("01234"))
+        assertTrue(model.unlockWithPin("012345"))
+        model.onAppBackgrounded()
+        assertFalse(model.uiState.value.isVaultUnlocked)
+        assertEquals(AutoLockTimeout.IMMEDIATE, model.uiState.value.autoLockTimeout)
+    }
+
+    @Test
     fun importingEncryptedFile_doesNotClaimItWasSavedToDrive() {
         val model = VaultViewModel()
         model.connectGoogleAccount("import_test@example.com")
@@ -152,8 +170,8 @@ class VaultViewModelTest {
         assertTrue(viewModel.uiState.value.hasCompletedFirstLogin)
         assertTrue(viewModel.uiState.value.promptPinSetupAfterFirstLogin)
 
-        // Set 4-digit Quick-Unlock PIN after first login
-        assertTrue(viewModel.setupUnlockPin("4829"))
+        // Set 6-digit Quick-Unlock PIN after first login
+        assertTrue(viewModel.setupUnlockPin("482903"))
         assertTrue(viewModel.uiState.value.isPinSet)
         assertFalse(viewModel.uiState.value.promptPinSetupAfterFirstLogin)
 
@@ -161,11 +179,11 @@ class VaultViewModelTest {
         viewModel.lockVault()
         assertFalse(viewModel.uiState.value.isVaultUnlocked)
 
-        assertFalse(viewModel.unlockWithPin("1111"))
+        assertFalse(viewModel.unlockWithPin("111111"))
         assertFalse(viewModel.uiState.value.isVaultUnlocked)
         assertEquals("Wrong PIN. Please enter the correct PIN.", viewModel.uiState.value.statusBannerMessage)
 
-        assertTrue(viewModel.unlockWithPin("4829"))
+        assertTrue(viewModel.unlockWithPin("482903"))
         assertTrue(viewModel.uiState.value.isVaultUnlocked)
     }
 

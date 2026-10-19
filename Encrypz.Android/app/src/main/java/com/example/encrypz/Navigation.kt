@@ -1,5 +1,6 @@
 package com.example.encrypz
 
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -115,6 +116,51 @@ fun MainNavigation(
         if (firstLaunch) requestDriveAccess()
     }
 
+    @Composable
+    fun UnlockContent() {
+        LoginScreen(
+            initialGoogleSignedIn = vaultState.isGoogleConnected,
+            connectedAccountEmail = vaultState.connectedGoogleEmail,
+            isDrivePermissionGranted = vaultState.isDrivePermissionGranted,
+            driveSetupError = vaultState.driveSetupError,
+            isRequestingDrivePermission = vaultState.isRequestingDrivePermission,
+            hasExistingVaultAccount = vaultState.hasExistingVaultAccount,
+            isCheckingAccountStatus = vaultState.isCheckingAccountStatus,
+            accountError = vaultState.statusBannerMessage,
+            hasCompletedFirstLogin = vaultState.hasCompletedFirstLogin,
+            isPinSet = vaultState.isPinSet,
+            onGoogleSignInChanged = { signedIn, email ->
+                if (signedIn) {
+                    vaultViewModel.connectGoogleAccount(
+                        email = email ?: vaultState.connectedGoogleEmail,
+                        context = context,
+                        requestDrivePermissionIfNeeded = true
+                    )
+                } else {
+                    vaultViewModel.disconnectGoogleAccount()
+                }
+            },
+            onRequestDrivePermission = requestDriveAccess,
+            onUnlockWithPassword = { password, isCreatingVault ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val result = vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
+                    if (result == com.example.encrypz.ui.vault.UnlockAttemptResult.SERVICE_ERROR)
+                        throw IllegalStateException(vaultViewModel.uiState.value.statusBannerMessage ?: "Account service unavailable.")
+                    result
+                }
+            },
+            onUnlockWithPin = { pin ->
+                vaultViewModel.unlockWithPin(pin, context)
+            },
+            onSetupPinAfterFirstLogin = { pin ->
+                vaultViewModel.setupUnlockPin(pin, context)
+            },
+            onLoginSuccess = {
+                isOnVaultScreen = true
+            }
+        )
+    }
+
     NavDisplay(
         backStack = backStack,
         onBack = {
@@ -127,47 +173,7 @@ fun MainNavigation(
         },
         entryProvider = entryProvider {
             entry<Login> {
-                LoginScreen(
-                    initialGoogleSignedIn = vaultState.isGoogleConnected,
-                    connectedAccountEmail = vaultState.connectedGoogleEmail,
-                    isDrivePermissionGranted = vaultState.isDrivePermissionGranted,
-                    driveSetupError = vaultState.driveSetupError,
-                    isRequestingDrivePermission = vaultState.isRequestingDrivePermission,
-                    hasExistingVaultAccount = vaultState.hasExistingVaultAccount,
-                    isCheckingAccountStatus = vaultState.isCheckingAccountStatus,
-                    accountError = vaultState.statusBannerMessage,
-                    hasCompletedFirstLogin = vaultState.hasCompletedFirstLogin,
-                    isPinSet = vaultState.isPinSet,
-                    onGoogleSignInChanged = { signedIn, email ->
-                        if (signedIn) {
-                            vaultViewModel.connectGoogleAccount(
-                                email = email ?: vaultState.connectedGoogleEmail,
-                                context = context,
-                                requestDrivePermissionIfNeeded = true
-                            )
-                        } else {
-                            vaultViewModel.disconnectGoogleAccount()
-                        }
-                    },
-                    onRequestDrivePermission = requestDriveAccess,
-                    onUnlockWithPassword = { password, isCreatingVault ->
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            val result = vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
-                            if (result == com.example.encrypz.ui.vault.UnlockAttemptResult.SERVICE_ERROR)
-                                throw IllegalStateException(vaultViewModel.uiState.value.statusBannerMessage ?: "Account service unavailable.")
-                            result
-                        }
-                    },
-                    onUnlockWithPin = { pin ->
-                        vaultViewModel.unlockWithPin(pin, context)
-                    },
-                    onSetupPinAfterFirstLogin = { pin ->
-                        vaultViewModel.setupUnlockPin(pin, context)
-                    },
-                    onLoginSuccess = {
-                        isOnVaultScreen = true
-                    }
-                )
+                UnlockContent()
             }
             entry<Vault> {
                 VaultScreen(
@@ -180,4 +186,24 @@ fun MainNavigation(
             }
         }
     )
+
+    // Keep activity-result launchers registered underneath the blocking unlock screen.
+    if (isOnVaultScreen && !vaultState.isVaultUnlocked) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+                securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn
+            )
+        ) {
+            androidx.compose.material3.Surface(
+                modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                color = com.example.encrypz.theme.EncrypzBlack
+            ) { UnlockContent() }
+        }
+    }
+
 }

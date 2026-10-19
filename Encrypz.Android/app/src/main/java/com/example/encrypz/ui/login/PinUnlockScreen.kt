@@ -29,14 +29,14 @@ internal fun PinUnlockScreen(email: String, pin: String, error: String?, onDigit
             }
             Text("Welcome back", style = MaterialTheme.typography.headlineMedium, color = EncrypzText)
             Text(email, style = MaterialTheme.typography.bodyMedium, color = EncrypzMuted)
-            Text("Enter your PIN to unlock", style = MaterialTheme.typography.bodyLarge, color = EncrypzText)
+            Text("Enter your 6-digit PIN to unlock", style = MaterialTheme.typography.bodyLarge, color = EncrypzText)
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(vertical = 10.dp).clearAndSetSemantics { contentDescription = "${pin.length} PIN digits entered" }) {
                 repeat(6) { index ->
                     Surface(Modifier.size(14.dp), shape = CircleShape,
                         color = if (index < pin.length) EncrypzBlue else EncrypzInputBorder) {}
                 }
             }
-            Text(error ?: "4?6 digits", color = if (error != null) MaterialTheme.colorScheme.error else EncrypzMuted,
+            Text(error ?: "6 digits", color = if (error != null) MaterialTheme.colorScheme.error else EncrypzMuted,
                 style = MaterialTheme.typography.bodySmall)
             for (row in listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("", "0", "delete"))) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -52,7 +52,7 @@ internal fun PinUnlockScreen(email: String, pin: String, error: String?, onDigit
                     }
                 }
             }
-            Button(onClick = onUnlock, enabled = pin.length in 4..6,
+            Button(onClick = onUnlock, enabled = pin.length == 6,
                 modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Unlock vault") }
             TextButton(onClick = onUsePassword) { Text("Use master password instead") }
         }
