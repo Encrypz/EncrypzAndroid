@@ -65,6 +65,30 @@ object LocalVaultStorage {
         return true
     }
 
+    fun isSelectedAccount(context: Context, email: String): Boolean {
+        val normalized = email.trim().lowercase(java.util.Locale.ROOT)
+        val id = VaultCrypto.toHex(java.security.MessageDigest.getInstance("SHA-256")
+            .digest(normalized.toByteArray(Charsets.UTF_8)))
+        return accountId(context) == id
+    }
+
+    private fun receiptKey(email: String, fileId: String) =
+        "${email.trim().lowercase(java.util.Locale.ROOT)}:$fileId"
+
+    fun uploadedDriveId(context: Context, email: String, fileId: String): String? =
+        context.getSharedPreferences("drive_upload_receipts", Context.MODE_PRIVATE)
+            .getString(receiptKey(email, fileId), null)
+
+    fun recordUpload(context: Context, email: String, fileId: String, driveId: String) {
+        check(context.getSharedPreferences("drive_upload_receipts", Context.MODE_PRIVATE)
+            .edit().putString(receiptKey(email, fileId), driveId).commit())
+    }
+
+    private fun withUploadReceipt(context: Context, file: VaultFileEntry): VaultFileEntry {
+        val driveId = uploadedDriveId(context, file.googleAccountEmail, file.id) ?: return file
+        return file.copy(driveFileId = driveId, driveSyncState = DriveSyncState.SYNCED_TO_DRIVE)
+    }
+
     data class PersistedVaultKeyBundle(
         val vaultKey: SecretKey,
         val salt: ByteArray
@@ -217,7 +241,8 @@ object LocalVaultStorage {
             }
 
             val filesArray = JSONArray()
-            for (file in files) {
+            for (storedFile in files) {
+                val file = withUploadReceipt(context, storedFile)
                 val fileObj = JSONObject().apply {
                     put("id", file.id)
                     put("name", file.name)
@@ -317,7 +342,7 @@ object LocalVaultStorage {
                 )
             }
 
-            return PersistedVaultData(folders = folders, files = files)
+            return PersistedVaultData(folders = folders, files = files.map { withUploadReceipt(context, it) })
         } catch (_: Exception) {
             return null
         }

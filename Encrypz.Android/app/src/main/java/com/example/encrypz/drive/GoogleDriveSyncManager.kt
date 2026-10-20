@@ -56,7 +56,8 @@ object GoogleDriveSyncManager {
         data class UploadFailed(
             val fileId: String,
             val encryptedFileName: String,
-            val reason: String
+            val reason: String,
+            val retryable: Boolean = true
         ) : DriveUploadResult()
     }
 
@@ -244,7 +245,8 @@ object GoogleDriveSyncManager {
                 return@withContext DriveUploadResult.UploadFailed(
                     fileId = file.id,
                     encryptedFileName = safeEncryptedName,
-                    reason = "Google Drive permission not granted yet. It will be requested on your next login."
+                    reason = "Google Drive permission not granted yet. It will be requested on your next login.",
+                    retryable = false
                 )
             }
             is TokenResolution.Failed -> {
@@ -276,6 +278,7 @@ object GoogleDriveSyncManager {
                 folderName = VAULT_DRIVE_FOLDER_NAME
             )
         } catch (firstEx: Exception) {
+            if (firstEx is kotlinx.coroutines.CancellationException) throw firstEx
             if (!isAuthError(firstEx)) {
                 return@withContext DriveUploadResult.UploadFailed(
                     fileId = file.id,
@@ -311,6 +314,7 @@ object GoogleDriveSyncManager {
                         folderName = VAULT_DRIVE_FOLDER_NAME
                     )
                 } catch (retryEx: Exception) {
+                    if (retryEx is kotlinx.coroutines.CancellationException) throw retryEx
                     return@withContext DriveUploadResult.UploadFailed(
                         fileId = file.id,
                         encryptedFileName = safeEncryptedName,
@@ -559,11 +563,17 @@ object GoogleDriveSyncManager {
         existingDriveId: String?,
         encryptedCreationDate: String
     ): String {
+        // A response can be lost after Drive commits the upload. Reuse the queued encrypted
+        // name on retry so that a network failure does not create a second cloud copy.
+        val escapedName = encryptedFileName.replace("\\", "\\\\").replace("'", "\\'")
+        val resolvedDriveId = existingDriveId?.takeIf { it.isNotBlank() }
+            ?: listDriveFiles("'$folderId' in parents and trashed = false and name = '$escapedName'",
+                accessToken).firstOrNull()?.getString("id")
         val boundary = "===encrypz_vault_boundary_${System.currentTimeMillis()}==="
         val metadataJson = JSONObject().apply {
             put("name", encryptedFileName)
             if (encryptedCreationDate.isNotBlank()) put("appProperties", JSONObject().put("encCreated", encryptedCreationDate))
-            if (existingDriveId.isNullOrBlank()) {
+            if (resolvedDriveId.isNullOrBlank()) {
                 put("parents", JSONArray().put(folderId))
             }
             put("mimeType", "application/octet-stream")
@@ -573,15 +583,15 @@ object GoogleDriveSyncManager {
             )
         }
 
-        val url = if (!existingDriveId.isNullOrBlank()) {
-            val encodedId = URLEncoder.encode(existingDriveId, "UTF-8")
+        val url = if (!resolvedDriveId.isNullOrBlank()) {
+            val encodedId = URLEncoder.encode(resolvedDriveId, "UTF-8")
             "$DRIVE_UPLOAD_API/$encodedId?uploadType=multipart&fields=id,name"
         } else {
             "$DRIVE_UPLOAD_API?uploadType=multipart&fields=id,name"
         }
 
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = if (!existingDriveId.isNullOrBlank()) "PATCH" else "POST"
+            requestMethod = if (!resolvedDriveId.isNullOrBlank()) "PATCH" else "POST"
             doOutput = true
             setRequestProperty("Authorization", "Bearer $accessToken")
             setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")

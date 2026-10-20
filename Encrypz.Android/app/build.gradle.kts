@@ -65,6 +65,8 @@ dependencies {
   implementation(composeBom)
   androidTestImplementation(composeBom)
 
+  implementation("androidx.work:work-runtime-ktx:2.10.1")
+
   // Core Android dependencies
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.lifecycle.runtime.ktx)
