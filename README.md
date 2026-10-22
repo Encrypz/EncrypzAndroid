@@ -96,7 +96,7 @@ React web client --> .NET API --> Google Drive hidden appDataFolder
 | `heroku.yml` | Heroku container build and web process definition |
 | `.env.example` | Backend configuration template; contains placeholders only |
 
-Android application ID: **`com.encrypz.vault`**. The source namespace remains `com.example.encrypz`; register the application ID, not the source namespace, in Google Cloud.
+Android application ID: **`com.encrypz.privacy`**. The source namespace is also `com.encrypz.privacy`.
 
 ## Requirements
 
@@ -120,7 +120,7 @@ Dependency versions are maintained in [the Android version catalog](Encrypz.Andr
 2. Enable the **Google Drive API**.
 3. Configure the OAuth consent screen / Google Auth Platform branding, audience, and requested scopes.
 4. While the project is in Testing, add the Google accounts that will use the app as test users. See [Google's audience settings](https://support.google.com/cloud/answer/15549945).
-5. Create an Android OAuth client with package **`com.encrypz.vault`** and the **SHA-1 of the certificate that signs the installed APK**. Google uses this pair to identify the Android client. See [Android client authentication](https://developers.google.com/android/guides/client-auth).
+5. Create an Android OAuth client with package **`com.encrypz.privacy`** and the **SHA-1 of the certificate that signs the installed APK**. Google uses this pair to identify the Android client. See [Android client authentication](https://developers.google.com/android/guides/client-auth).
 6. Create/configure the web OAuth client needed by the API's browser flow and set its client ID and secret on the backend.
 
 From `Encrypz.Android`, inspect signing fingerprints with:
@@ -392,7 +392,7 @@ Unit tests and a successful APK build do not verify Google Cloud configuration, 
 
 | Symptom | Checks |
 | --- | --- |
-| `UNREGISTERED_ON_API_CONSOLE` or Google error 10 | Verify `com.encrypz.vault`, the installed APK's signing SHA-1, OAuth project, and enabled Drive API. Rebuilding with another signing key requires matching Google configuration. |
+| `UNREGISTERED_ON_API_CONSOLE` or Google error 10 | Verify `com.encrypz.privacy`, the installed APK's signing SHA-1, OAuth project, and enabled Drive API. Rebuilding with another signing key requires matching Google configuration. |
 | `403: access_denied` / app is being tested | Add the signed-in account as a test user in the correct Google project, or complete the production publishing requirements for your app. |
 | Drive permission not granted | Complete Google's consent screen using the intended account. Retry from Security; check that the correct OAuth project and scopes are configured. |
 | No Encrypz folder | Confirm successful Drive authorization and folder creation. Verify the Google account, connectivity, API enablement, and authorization error shown by the app. |

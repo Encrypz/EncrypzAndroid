@@ -1,0 +1,4 @@
+storeFile=signing/upload-keystore.jks
+storePassword=REPLACE_WITH_STORE_PASSWORD
+keyAlias=encrypz-upload
+keyPassword=REPLACE_WITH_KEY_PASSWORD

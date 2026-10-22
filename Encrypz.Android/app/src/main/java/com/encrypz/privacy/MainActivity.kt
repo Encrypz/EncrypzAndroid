@@ -1,0 +1,79 @@
+package com.encrypz.privacy
+
+import android.graphics.Color
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.view.WindowManager
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.core.app.ActivityCompat
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.encrypz.privacy.theme.EncrypzTheme
+import com.encrypz.privacy.ui.vault.VaultViewModel
+
+class MainActivity : androidx.fragment.app.FragmentActivity() {
+    private val vaultViewModel: VaultViewModel by viewModels()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        AppNotifications.createChannel(this)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                1001
+            )
+        }
+
+        // Default to FLAG_SECURE enabled to protect zero-knowledge vault from screenshots & Recents previews
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
+
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.parseColor("#0A0A0A"))
+        )
+
+        setContent {
+            val state by vaultViewModel.uiState.collectAsStateWithLifecycle()
+
+            LaunchedEffect(state.screenshotProtectionEnabled) {
+                if (state.screenshotProtectionEnabled) {
+                    window.setFlags(
+                        WindowManager.LayoutParams.FLAG_SECURE,
+                        WindowManager.LayoutParams.FLAG_SECURE
+                    )
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                }
+            }
+
+            EncrypzTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    MainNavigation(vaultViewModel = vaultViewModel)
+                }
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) vaultViewModel.onAppBackgrounded()
+    }
+}

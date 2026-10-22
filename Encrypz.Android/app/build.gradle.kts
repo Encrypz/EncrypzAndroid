@@ -17,23 +17,36 @@ fun localProp(key: String): String =
     (localProps.getProperty(key) ?: System.getenv(key) ?: "").replace("\"", "\\\"")
 
 android {
-    namespace = "com.example.encrypz"
+    namespace = "com.encrypz.privacy"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.encrypz.vault"
+        applicationId = "com.encrypz.privacy"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
 
         buildConfigField("String", "ACCOUNT_API_BASE_URL", "\"${localProp("ACCOUNT_API_BASE_URL")}\"")
         buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${localProp("GOOGLE_CLIENT_ID")}\"")
     }
 
+    signingConfigs {
+        create("release") {
+            val signingProps = Properties().apply {
+                val propsFile = rootProject.file("signing.properties")
+                if (propsFile.exists()) propsFile.inputStream().use { load(it) }
+            }
+            storeFile = rootProject.file(signingProps.getProperty("storeFile", "signing/upload-keystore.jks"))
+            storePassword = signingProps.getProperty("storePassword") ?: System.getenv("ENCRYPZ_STORE_PASSWORD")
+            keyAlias = signingProps.getProperty("keyAlias", "encrypz-upload")
+            keyPassword = signingProps.getProperty("keyPassword") ?: System.getenv("ENCRYPZ_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
