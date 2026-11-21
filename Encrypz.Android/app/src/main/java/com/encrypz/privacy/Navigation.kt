@@ -14,11 +14,14 @@ import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.ui.NavDisplay
 import com.encrypz.privacy.ui.login.LoginScreen
+import com.encrypz.privacy.ui.vault.VaultListScreen
 import com.encrypz.privacy.ui.vault.VaultScreen
 import com.encrypz.privacy.ui.vault.VaultViewModel
+import com.encrypz.privacy.vault.VaultStorageType
 import kotlinx.serialization.Serializable
 
 // Navigation Keys marked @Serializable for Navigation 3 runtime compatibility
+@Serializable data object VaultList : NavKey
 @Serializable data object Login : NavKey
 @Serializable data object Vault : NavKey
 
@@ -26,17 +29,30 @@ import kotlinx.serialization.Serializable
 fun MainNavigation(
     vaultViewModel: VaultViewModel = viewModel()
 ) {
-    var isOnVaultScreen by rememberSaveable { mutableStateOf(false) }
-    val backStack = remember(isOnVaultScreen) {
-        mutableStateListOf<NavKey>(if (isOnVaultScreen) Vault else Login)
+    var activeRoute by rememberSaveable { mutableStateOf("VaultList") }
+    val backStack = remember(activeRoute) {
+        mutableStateListOf<NavKey>(
+            when (activeRoute) {
+                "Vault" -> Vault
+                "Login" -> Login
+                else -> VaultList
+            }
+        )
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     val vaultState by vaultViewModel.uiState.collectAsStateWithLifecycle()
+    val isOnVaultScreen = activeRoute == "Vault"
 
-    // The account's vault key is restored before isVaultUnlocked becomes true.
-    androidx.compose.runtime.LaunchedEffect(vaultState.isVaultUnlocked,
-        vaultState.isDrivePermissionGranted, vaultState.connectedGoogleEmail) {
-        if (vaultState.isVaultUnlocked && vaultState.isDrivePermissionGranted) {
+    androidx.compose.runtime.LaunchedEffect(
+        vaultState.isVaultUnlocked,
+        vaultState.isDrivePermissionGranted,
+        vaultState.connectedGoogleEmail,
+        vaultState.activeVault?.id
+    ) {
+        if (vaultState.isVaultUnlocked &&
+            vaultState.activeVault?.isOfflineLocal != true &&
+            vaultState.isDrivePermissionGranted
+        ) {
             vaultViewModel.syncVaultWithGoogleDrive(context, notifyOnCompletion = false)
         }
     }
@@ -50,41 +66,63 @@ fun MainNavigation(
         if (email != null) {
             vaultViewModel.connectGoogleAccount(email, context, requestDrivePermissionIfNeeded = true)
         } else {
-            vaultViewModel.onDriveAuthorizationLaunchFailed("Choose a Google account to enable automatic Drive backup.")
+            vaultViewModel.onDriveAuthorizationLaunchFailed("Choose a Google account to enable Google Drive access.")
         }
     }
-    val requestDriveAccess: () -> Unit = {
-        val email = vaultState.connectedGoogleEmail.ifBlank {
-            com.encrypz.privacy.auth.GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty()
+
+    val requestDriveAccessForEmail: (String, Boolean) -> Unit = { overrideEmail, forceBrowser ->
+        val email = overrideEmail.ifBlank {
+            vaultState.connectedGoogleEmail.ifBlank {
+                com.encrypz.privacy.auth.GoogleAuthConfig.getSavedGoogleEmail(context).orEmpty()
+            }
         }
-        if (email.isBlank()) {
+        if (forceBrowser) {
+            vaultViewModel.requestGoogleDrivePermission(
+                context = context,
+                emailOverride = email,
+                forceBrowserOAuth = true,
+                forceRetry = true
+            )
+        } else if (email.isBlank()) {
             try {
                 driveAccountLauncher.launch(com.encrypz.privacy.auth.GoogleAuthConfig.createGoogleAccountChooserIntent())
             } catch (ex: Exception) {
-                vaultViewModel.onDriveAuthorizationLaunchFailed("Could not open Google account selection: ${ex.localizedMessage}")
+                vaultViewModel.onDriveAuthorizationLaunchFailed(
+                    context,
+                    "Could not open Google account selection: ${ex.localizedMessage}"
+                )
             }
-        } else if (!vaultState.isGoogleConnected) {
+        } else if (!vaultState.isGoogleConnected || !vaultState.connectedGoogleEmail.equals(email, ignoreCase = true)) {
             vaultViewModel.connectGoogleAccount(email, context, requestDrivePermissionIfNeeded = true)
         } else {
-            vaultViewModel.requestGoogleDrivePermission(context, email)
+            vaultViewModel.requestGoogleDrivePermission(context, email, forceRetry = true)
         }
     }
+
+    val requestDriveAccess: () -> Unit = { requestDriveAccessForEmail("", false) }
+    val requestDriveAccessViaBrowser: () -> Unit = { requestDriveAccessForEmail("", true) }
 
     val driveAuthorizationLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
-        vaultViewModel.onDriveAuthorizationResult(context, result.data,
-            result.resultCode == android.app.Activity.RESULT_OK)
+        vaultViewModel.onDriveAuthorizationResult(
+            context, result.data,
+            result.resultCode == android.app.Activity.RESULT_OK
+        )
     }
     androidx.compose.runtime.LaunchedEffect(vaultState.pendingDriveAuthorization) {
         vaultState.pendingDriveAuthorization?.let { pending ->
             vaultViewModel.consumeDriveAuthorization()
+            vaultViewModel.markDriveAuthorizationLaunched()
             try {
                 driveAuthorizationLauncher.launch(
                     androidx.activity.result.IntentSenderRequest.Builder(pending.intentSender).build()
                 )
             } catch (ex: Exception) {
-                vaultViewModel.onDriveAuthorizationLaunchFailed("Could not open Google's permission screen: ${ex.localizedMessage}")
+                vaultViewModel.onDriveAuthorizationLaunchFailed(
+                    context,
+                    "Could not open Google's permission screen: ${ex.localizedMessage}"
+                )
             }
         }
     }
@@ -96,23 +134,30 @@ fun MainNavigation(
     }
     androidx.compose.runtime.LaunchedEffect(vaultState.pendingDriveConsentIntent, isOnVaultScreen) {
         if (!isOnVaultScreen) {
-            vaultState.pendingDriveConsentIntent?.let { driveConsentLauncher.launch(it) }
+            vaultState.pendingDriveConsentIntent?.let { consentIntent ->
+                vaultViewModel.consumeDriveConsent()
+                try {
+                    driveConsentLauncher.launch(consentIntent)
+                } catch (_: Exception) {
+                    vaultViewModel.onDriveConsentResult(context, false)
+                }
+            }
         }
     }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        vaultViewModel.ensureLocalStorageLoaded(context)
-        // This marker is excluded from backup, so a fresh install starts setup again.
-        val firstLaunch = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            java.io.File(context.noBackupFilesDir, "drive_setup_started_v1").createNewFile()
-        }
-        if (firstLaunch) requestDriveAccess()
+        vaultViewModel.loadVaults(context)
     }
 
     @Composable
     fun UnlockContent() {
+        val activeVault = vaultState.activeVault
+        val isLocalVault = activeVault?.isOfflineLocal == true
+        val biometricKeyId = activeVault?.id ?: vaultState.connectedGoogleEmail
+        val biometricSubtitle = activeVault?.name ?: vaultState.connectedGoogleEmail
+
         // Keep this outside the PIN/password branches so cancelling never opens another prompt.
-        var fingerprintPrompted by rememberSaveable(vaultState.connectedGoogleEmail) { mutableStateOf(false) }
+        var fingerprintPrompted by rememberSaveable(biometricKeyId) { mutableStateOf(false) }
         val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
         androidx.compose.runtime.DisposableEffect(lifecycle) {
             val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -121,14 +166,28 @@ fun MainNavigation(
             lifecycle.addObserver(observer)
             onDispose { lifecycle.removeObserver(observer) }
         }
-        com.encrypz.privacy.auth.FingerprintControl(vaultViewModel, vaultState.connectedGoogleEmail,
-            setup = false, autoPrompt = !fingerprintPrompted, showControls = false,
-            onAutoPrompt = { fingerprintPrompted = true }, onUnlocked = { isOnVaultScreen = true })
+        com.encrypz.privacy.auth.FingerprintControl(
+            viewModel = vaultViewModel,
+            email = biometricKeyId,
+            setup = false,
+            autoPrompt = !fingerprintPrompted,
+            showControls = false,
+            onAutoPrompt = { fingerprintPrompted = true },
+            onUnlocked = { activeRoute = "Vault" },
+            subtitle = biometricSubtitle
+        )
         LoginScreen(
             fingerprintContent = {
-                com.encrypz.privacy.auth.FingerprintControl(vaultViewModel, vaultState.connectedGoogleEmail,
-                    setup = false, onUnlocked = { isOnVaultScreen = true })
+                com.encrypz.privacy.auth.FingerprintControl(
+                    viewModel = vaultViewModel,
+                    email = biometricKeyId,
+                    setup = false,
+                    onUnlocked = { activeRoute = "Vault" },
+                    subtitle = biometricSubtitle
+                )
             },
+            vaultName = activeVault?.name.orEmpty(),
+            isLocalVault = isLocalVault,
             initialGoogleSignedIn = vaultState.isGoogleConnected,
             connectedAccountEmail = vaultState.connectedGoogleEmail,
             isDrivePermissionGranted = vaultState.isDrivePermissionGranted,
@@ -151,12 +210,18 @@ fun MainNavigation(
                 }
             },
             onRequestDrivePermission = requestDriveAccess,
+            onRequestDrivePermissionViaBrowser = requestDriveAccessViaBrowser,
             onUnlockWithPassword = { password, isCreatingVault ->
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val result = vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
-                    if (result == com.encrypz.privacy.ui.vault.UnlockAttemptResult.SERVICE_ERROR)
-                        throw IllegalStateException(vaultViewModel.uiState.value.statusBannerMessage ?: "Account service unavailable.")
-                    result
+                if (activeVault != null && activeVault.formatVersion == 2 && !isCreatingVault) {
+                    vaultViewModel.unlockSelectedVault(context, password)
+                } else {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val result = vaultViewModel.attemptUnlockWithMasterPassword(password, isCreatingVault, context)
+                        if (result == com.encrypz.privacy.ui.vault.UnlockAttemptResult.SERVICE_ERROR) {
+                            throw IllegalStateException(vaultViewModel.uiState.value.statusBannerMessage ?: "Unable to unlock vault.")
+                        }
+                        result
+                    }
                 }
             },
             onUnlockWithPin = { pin ->
@@ -165,8 +230,17 @@ fun MainNavigation(
             onSetupPinAfterFirstLogin = { pin ->
                 vaultViewModel.setupUnlockPin(pin, context)
             },
+            onBackToVaultList = {
+                vaultViewModel.lockVault()
+                activeRoute = "VaultList"
+            },
+            onRecoverWithKey = if (activeVault?.formatVersion == 2) {
+                { recoveryKey, newPass ->
+                    vaultViewModel.recoverVaultWithKey(context, activeVault.id, recoveryKey, newPass)
+                }
+            } else null,
             onLoginSuccess = {
-                isOnVaultScreen = true
+                activeRoute = "Vault"
             }
         )
     }
@@ -174,14 +248,36 @@ fun MainNavigation(
     NavDisplay(
         backStack = backStack,
         onBack = {
-            if (backStack.size > 1) {
-                backStack.removeLastOrNull()
-            } else if (isOnVaultScreen) {
-                vaultViewModel.lockVault()
-                isOnVaultScreen = false
+            when {
+                backStack.size > 1 -> backStack.removeLastOrNull()
+                activeRoute == "Vault" -> {
+                    vaultViewModel.lockVault()
+                    activeRoute = "Login"
+                }
+                activeRoute == "Login" -> {
+                    vaultViewModel.lockVault()
+                    activeRoute = "VaultList"
+                }
             }
         },
         entryProvider = entryProvider {
+            entry<VaultList> {
+                VaultListScreen(
+                    viewModel = vaultViewModel,
+                    onOpenVault = {
+                        activeRoute = "Login"
+                    },
+                    onVaultCreatedAndUnlocked = {
+                        activeRoute = "Vault"
+                    },
+                    onRequestDrivePermission = { email ->
+                        requestDriveAccessForEmail(email, false)
+                    },
+                    onRequestDrivePermissionViaBrowser = { email ->
+                        requestDriveAccessForEmail(email, true)
+                    }
+                )
+            }
             entry<Login> {
                 UnlockContent()
             }
@@ -189,8 +285,12 @@ fun MainNavigation(
                 VaultScreen(
                     viewModel = vaultViewModel,
                     onRequestDrivePermission = requestDriveAccess,
+                    onRequestDrivePermissionViaBrowser = requestDriveAccessViaBrowser,
+                    onSwitchVault = {
+                        activeRoute = "VaultList"
+                    },
                     onLogout = {
-                        isOnVaultScreen = false
+                        activeRoute = "Login"
                     }
                 )
             }
@@ -215,5 +315,4 @@ fun MainNavigation(
             ) { UnlockContent() }
         }
     }
-
 }

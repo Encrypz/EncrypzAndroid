@@ -3,9 +3,11 @@ package com.encrypz.privacy.data
 import android.content.Context
 import android.util.Base64
 import com.encrypz.privacy.crypto.VaultCrypto
+import com.encrypz.privacy.crypto.vault.VaultMasterkey
 import com.encrypz.privacy.ui.vault.DriveSyncState
 import com.encrypz.privacy.ui.vault.VaultFileEntry
 import com.encrypz.privacy.ui.vault.VaultFolder
+import com.encrypz.privacy.vault.VaultKeyRecord
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -20,6 +22,7 @@ import javax.crypto.spec.SecretKeySpec
 object LocalVaultStorage {
     private const val PREFS_NAME = "encrypz_vault_storage_prefs"
     private const val KEY_VAULT_KEY_B64 = "vault_aes256_key_b64"
+    private const val KEY_MAC_KEY_B64 = "vault_aes256_mac_key_b64"
     private const val KEY_VAULT_SALT_B64 = "vault_pbkdf2_salt_b64"
     private const val KEY_INITIALIZED = "vault_storage_initialized_v2"
 
@@ -129,6 +132,37 @@ object LocalVaultStorage {
             .putString(KEY_VAULT_SALT_B64, Base64.encodeToString(salt, Base64.NO_WRAP)).commit())
     }
 
+    fun saveMasterkeyBundle(context: Context, masterkey: VaultMasterkey.MasterkeySet) {
+        val enc = masterkey.copyEncKey()
+        val mac = masterkey.copyMacKey()
+        try {
+            check(accountPreferences(context).edit()
+                .putString(KEY_VAULT_KEY_B64, DeviceSecrets.seal(enc))
+                .putString(KEY_MAC_KEY_B64, DeviceSecrets.seal(mac))
+                .commit())
+        } finally {
+            enc.fill(0)
+            mac.fill(0)
+        }
+    }
+
+    fun loadMasterkeyBundle(context: Context): VaultMasterkey.MasterkeySet? {
+        val prefs = accountPreferences(context)
+        val encSealed = prefs.getString(KEY_VAULT_KEY_B64, null) ?: return null
+        val macSealed = prefs.getString(KEY_MAC_KEY_B64, null) ?: return null
+        if (!encSealed.startsWith("ks1:") || !macSealed.startsWith("ks1:")) return null
+        return runCatching {
+            val enc = DeviceSecrets.open(encSealed)
+            val mac = DeviceSecrets.open(macSealed)
+            try {
+                VaultMasterkey.MasterkeySet(enc, mac)
+            } finally {
+                enc.fill(0)
+                mac.fill(0)
+            }
+        }.getOrNull()
+    }
+
     fun isInitialized(context: Context): Boolean {
         val prefs = accountPreferences(context)
         val manifestFile = File(getVaultRootDir(context), MANIFEST_FILE_NAME)
@@ -138,12 +172,13 @@ object LocalVaultStorage {
     @Synchronized
     fun saveUserAuthRecord(
         context: Context,
-        record: MongoAtlasClient.MongoVaultUserRecord
+        record: VaultKeyRecord
     ) {
-        val keyEmail = record.email.trim().lowercase().ifBlank { "default_vault_user" }
+        val keyEmail = record.vaultId.ifBlank { record.email }.trim().lowercase().ifBlank { "default_vault_user" }
         val prefs = accountPreferences(context)
         val json = JSONObject().apply {
-            put("email", keyEmail)
+            put("vaultId", record.vaultId)
+            put("email", record.email.trim().lowercase())
             put("credentialVersion", record.credentialVersion)
             put("passwordSaltHex", record.passwordSaltHex)
             put("passwordVerifierHex", record.passwordVerifierHex)
@@ -152,6 +187,7 @@ object LocalVaultStorage {
             put("hasLoggedInOnce", record.hasLoggedInOnce)
             put("driveFolderId", record.driveFolderId ?: "")
             put("googleRefreshToken", record.googleRefreshToken ?: "")
+            put("updatedAt", record.updatedAt)
         }
         prefs.edit()
             .putString("user_auth_record_$keyEmail", DeviceSecrets.seal(json.toString().toByteArray(Charsets.UTF_8)))
@@ -161,24 +197,26 @@ object LocalVaultStorage {
     @Synchronized
     fun loadUserAuthRecord(
         context: Context,
-        email: String
-    ): MongoAtlasClient.MongoVaultUserRecord? {
-        val keyEmail = email.trim().lowercase().ifBlank { "default_vault_user" }
+        emailOrVaultId: String
+    ): VaultKeyRecord? {
+        val keyEmail = emailOrVaultId.trim().lowercase().ifBlank { "default_vault_user" }
         val prefs = accountPreferences(context)
         val raw = prefs.getString("user_auth_record_$keyEmail", null)
         if (raw.isNullOrBlank()) return null
         return try {
             val json = JSONObject(if (raw.startsWith("ks1:")) String(DeviceSecrets.open(raw), Charsets.UTF_8) else raw)
-            MongoAtlasClient.MongoVaultUserRecord(
+            VaultKeyRecord(
+                vaultId = json.optString("vaultId", keyEmail),
                 email = json.optString("email", keyEmail),
                 credentialVersion = json.optInt("credentialVersion", 1),
-                passwordSaltHex = json.getString("passwordSaltHex"),
-                passwordVerifierHex = json.getString("passwordVerifierHex"),
-                wrappedVaultKeyHex = json.getString("wrappedVaultKeyHex"),
+                passwordSaltHex = json.optString("passwordSaltHex", ""),
+                passwordVerifierHex = json.optString("passwordVerifierHex", ""),
+                wrappedVaultKeyHex = json.optString("wrappedVaultKeyHex", ""),
                 pinVerifierHex = json.optString("pinVerifierHex").takeIf { it.isNotBlank() },
                 hasLoggedInOnce = json.optBoolean("hasLoggedInOnce", true),
                 driveFolderId = json.optString("driveFolderId").takeIf { it.isNotBlank() },
-                googleRefreshToken = json.optString("googleRefreshToken").takeIf { it.isNotBlank() }
+                googleRefreshToken = json.optString("googleRefreshToken").takeIf { it.isNotBlank() },
+                updatedAt = json.optString("updatedAt", "")
             )
         } catch (_: Exception) {
             null

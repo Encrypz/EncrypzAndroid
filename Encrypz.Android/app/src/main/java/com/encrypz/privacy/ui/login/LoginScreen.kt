@@ -127,6 +127,8 @@ private enum class AuthInfoDialog {
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
     modifier: Modifier = Modifier,
+    vaultName: String = "",
+    isLocalVault: Boolean = false,
     initialGoogleSignedIn: Boolean = false,
     connectedAccountEmail: String = "",
     isDrivePermissionGranted: Boolean = false,
@@ -141,7 +143,10 @@ fun LoginScreen(
     onUnlockWithPin: ((String) -> Boolean)? = null,
     onSetupPinAfterFirstLogin: ((String) -> Boolean)? = null,
     onRequestDrivePermission: (() -> Unit)? = null,
+    onRequestDrivePermissionViaBrowser: (() -> Unit)? = null,
     onGoogleSignInChanged: ((Boolean, String?) -> Unit)? = null,
+    onBackToVaultList: (() -> Unit)? = null,
+    onRecoverWithKey: (suspend (String, String) -> Result<Unit>)? = null,
     fingerprintContent: @Composable () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -150,6 +155,9 @@ fun LoginScreen(
     var isCreatingVault by rememberSaveable { mutableStateOf(false) }
     var usePinMode by rememberSaveable { mutableStateOf(hasCompletedFirstLogin && isPinSet) }
     var showPinSetupStepAfterFirstLogin by rememberSaveable { mutableStateOf(false) }
+    var showRecoveryDialog by rememberSaveable { mutableStateOf(false) }
+    val isVaultSelected = vaultName.isNotBlank() || isLocalVault
+    val canShowUnlockForm = isLocalVault || isGoogleSignedIn
 
     var masterPassword by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
@@ -172,9 +180,9 @@ fun LoginScreen(
         }
     }
 
-    // Restore previously selected Google account from SharedPreferences if present
-    LaunchedEffect(Unit) {
-        if (activeEmail.isBlank()) {
+    // Restore previously selected Google account from SharedPreferences only when no local vault is selected
+    LaunchedEffect(isLocalVault) {
+        if (!isLocalVault && !isVaultSelected && activeEmail.isBlank()) {
             val savedEmail = GoogleAuthConfig.getSavedGoogleEmail(context)
             if (!savedEmail.isNullOrBlank()) {
                 activeEmail = savedEmail
@@ -185,13 +193,13 @@ fun LoginScreen(
     }
 
     // Automatically direct unregistered Google email accounts to Account Creation,
-    // or enable PIN unlock if the account has already completed first login and set a PIN.
-    LaunchedEffect(isGoogleSignedIn, activeEmail, hasExistingVaultAccount, isCheckingAccountStatus, hasCompletedFirstLogin, isPinSet) {
-        if (isGoogleSignedIn && activeEmail.isNotBlank() && !isCheckingAccountStatus && !showPinSetupStepAfterFirstLogin) {
-            if (!hasExistingVaultAccount) {
+    // or enable PIN unlock if the vault/account has already completed first login and set a PIN.
+    LaunchedEffect(canShowUnlockForm, activeEmail, hasExistingVaultAccount, isCheckingAccountStatus, hasCompletedFirstLogin, isPinSet) {
+        if (canShowUnlockForm && !isCheckingAccountStatus && !showPinSetupStepAfterFirstLogin) {
+            if (!hasExistingVaultAccount && !isVaultSelected) {
                 isCreatingVault = true
                 usePinMode = false
-                infoMessage = "No Encrypz account found for $activeEmail. Directed to account creation — set a master password to create your vault."
+                infoMessage = "Set a master password to create a new vault in Google Drive, or switch to 'Unlock existing' if you already have one."
             } else {
                 isCreatingVault = false
                 infoMessage = null
@@ -237,12 +245,7 @@ fun LoginScreen(
                 isSubmitting = true
                 try {
                     errorMessage = null
-                    if (!isCreatingVault && !hasExistingVaultAccount && !isCheckingAccountStatus) {
-                        // User attempted to log in with an email that does not have an Encrypz account created
-                        isCreatingVault = true
-                        usePinMode = false
-                        infoMessage = "No Encrypz account found for $activeEmail. Please set and confirm a master password to create your account."
-                    } else if (masterPassword.isBlank()) {
+                    if (masterPassword.isBlank()) {
                         errorMessage = "Please enter your master password."
                     } else if (isCreatingVault && masterPassword.length < 12) {
                         errorMessage = "Use at least 12 characters for your new vault master password."
@@ -266,10 +269,10 @@ fun LoginScreen(
                                 isCreatingVault = true
                                 usePinMode = false
                                 errorMessage = null
-                                infoMessage = "No Encrypz account found for $activeEmail. Directed to account creation — please set and confirm your master password."
+                                infoMessage = "No existing vault found in Google Drive for $activeEmail. Set and confirm a master password to create a new vault."
                             }
                             UnlockAttemptResult.SERVICE_ERROR -> {
-                                errorMessage = currentAccountError ?: "Account service unavailable. Please retry."
+                                errorMessage = currentAccountError ?: "Unable to open vault. Please retry."
                             }
                             UnlockAttemptResult.WRONG_PASSWORD -> {
                                 errorMessage = "Wrong master password. Please enter the correct master password."
@@ -280,7 +283,7 @@ fun LoginScreen(
                         }
                     }
                 } catch (e: IllegalStateException) {
-                    errorMessage = e.message ?: "Account service unavailable. Please retry."
+                    errorMessage = e.message ?: "Unable to unlock vault. Please retry."
                 } finally { isSubmitting = false }
             }
         }
@@ -322,13 +325,18 @@ fun LoginScreen(
         }
     }
 
-    if (isGoogleSignedIn && usePinMode && isPinSet && !showPinSetupStepAfterFirstLogin && !isCreatingVault) {
-        PinUnlockScreen(email = activeEmail, pin = pinInput, error = errorMessage,
+    if (canShowUnlockForm && usePinMode && isPinSet && !showPinSetupStepAfterFirstLogin && !isCreatingVault) {
+        PinUnlockScreen(
+            email = if (isLocalVault) vaultName.ifBlank { "Local Vault" } else activeEmail,
+            pin = pinInput,
+            error = errorMessage,
             onDigit = { if (pinInput.length < 6) { pinInput += it; errorMessage = null } },
             onBackspace = { pinInput = pinInput.dropLast(1); errorMessage = null },
             onUnlock = handlePinUnlock,
-            onUsePassword = { usePinMode = false; pinInput = ""; errorMessage = null }, modifier = modifier,
-            fingerprintContent = fingerprintContent)
+            onUsePassword = { usePinMode = false; pinInput = ""; errorMessage = null },
+            modifier = modifier,
+            fingerprintContent = fingerprintContent
+        )
         return
     }
 
@@ -362,7 +370,7 @@ fun LoginScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            if (isGoogleSignedIn && hasExistingVaultAccount && !isCreatingVault) fingerprintContent()
+            if (canShowUnlockForm && hasExistingVaultAccount && !isCreatingVault) fingerprintContent()
             // Top Header matching Encrypz.UI AuthLayout.tsx (.auth-header)
             Row(
                 modifier = Modifier
@@ -391,11 +399,23 @@ fun LoginScreen(
                     )
                 }
 
-                Text(
-                    text = "Zero-Knowledge Vault",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = EncrypzMuted
-                )
+                if (onBackToVaultList != null) {
+                    Text(
+                        text = "All Vaults",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            textDecoration = TextDecoration.Underline
+                        ),
+                        color = EncrypzBlueBright,
+                        modifier = Modifier.clickable { onBackToVaultList() }
+                    )
+                } else {
+                    Text(
+                        text = "Zero-Knowledge Vault",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = EncrypzMuted
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -435,9 +455,10 @@ fun LoginScreen(
                                 Text(
                                     text = when {
                                         showPinSetupStepAfterFirstLogin -> "Set Quick-Unlock PIN"
-                                        !isGoogleSignedIn && isCreatingVault -> "Create your vault"
-                                        !isGoogleSignedIn -> "Welcome to Encrypz"
-                                        isCreatingVault -> "Create your account"
+                                        vaultName.isNotBlank() -> vaultName
+                                        !canShowUnlockForm && isCreatingVault -> "Create your vault"
+                                        !canShowUnlockForm -> "Welcome to Encrypz"
+                                        isCreatingVault -> "Create your vault"
                                         usePinMode && isPinSet -> "Unlock with PIN"
                                         else -> "Unlock your vault"
                                     },
@@ -448,7 +469,7 @@ fun LoginScreen(
                                     color = EncrypzText
                                 )
                                 Text(
-                                    text = "Client-side AES-256-GCM encryption",
+                                    text = "Encrypz Vault v2 · AES-256-GCM",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = EncrypzBlueBright
                                 )
@@ -460,13 +481,15 @@ fun LoginScreen(
                         Text(
                             text = when {
                                 showPinSetupStepAfterFirstLogin ->
-                                    "First login complete! Set a 6 digit PIN so you can unlock your vault quickly next time."
-                                isGoogleSignedIn && isCreatingVault ->
-                                    "Create a strong master password to register your Encrypz account and encrypt your vault keys."
-                                isGoogleSignedIn && usePinMode && isPinSet ->
+                                    "First unlock complete! Set a 6 digit PIN so you can unlock your vault quickly next time."
+                                isLocalVault ->
+                                    "Offline local device vault — enter your master password to unwrap the masterkey."
+                                canShowUnlockForm && isCreatingVault ->
+                                    "Create a strong master password to encrypt your Encrypz masterkey."
+                                canShowUnlockForm && usePinMode && isPinSet ->
                                     "Enter your 6 digit Quick-Unlock PIN to open your encrypted vault."
-                                isGoogleSignedIn ->
-                                    "Enter your master password to unlock your encrypted files."
+                                canShowUnlockForm ->
+                                    "Enter your master password to unlock your encrypted vault."
                                 else ->
                                     "Continue with your Google account to access or create your encrypted Google Drive vault."
                             },
@@ -608,7 +631,7 @@ fun LoginScreen(
                                     color = EncrypzMuted
                                 )
                             }
-                        } else if (!isGoogleSignedIn) {
+                        } else if (!canShowUnlockForm) {
                             // Only "Continue with Google" button (Sign in with manual email removed as requested)
                             Button(
                                 onClick = {
@@ -669,125 +692,233 @@ fun LoginScreen(
                                 )
                             }
                         } else {
-                            // Connected Google Account row showing the user's real selected email
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp),
-                                color = EncrypzSuccessBg,
-                                border = BorderStroke(1.dp, EncrypzSuccessBorder)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                            if (isLocalVault) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = EncrypzSuccessBg,
+                                    border = BorderStroke(1.dp, EncrypzSuccessBorder)
                                 ) {
                                     Row(
-                                        modifier = Modifier.weight(1f),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = null,
-                                            tint = EncrypzEmeraldBright,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = activeEmail,
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                fontWeight = FontWeight.Medium
-                                            ),
-                                            color = EncrypzText,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    Text(
-                                        text = "Use another",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.SemiBold
-                                        ),
-                                        color = EncrypzBlueBright,
                                         modifier = Modifier
-                                            .padding(start = 8.dp)
-                                            .clickable {
-                                                try {
-                                                    GoogleAuthConfig.createGoogleSignInClient(context).signOut()
-                                                } catch (_: Exception) {}
-                                                GoogleAuthConfig.clearSavedGoogleEmail(context)
-                                                isGoogleSignedIn = false
-                                                activeEmail = ""
-                                                masterPassword = ""
-                                                confirmPassword = ""
-                                                pinInput = ""
-                                                errorMessage = null
-                                                infoMessage = null
-                                                onGoogleSignInChanged?.invoke(false, null)
-                                            }
-                                    )
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = EncrypzEmeraldBright,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Local Device Storage (Offline)",
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontWeight = FontWeight.Medium
+                                                ),
+                                                color = EncrypzText,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        if (onBackToVaultList != null) {
+                                            Text(
+                                                text = "Switch",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.SemiBold
+                                                ),
+                                                color = EncrypzBlueBright,
+                                                modifier = Modifier
+                                                    .padding(start = 8.dp)
+                                                    .clickable { onBackToVaultList() }
+                                            )
+                                        }
+                                    }
                                 }
-                            }
-
-                            Spacer(Modifier.height(10.dp))
-
-                            // Google Drive "Encrypz" Folder Permission status & action row
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(enabled = !isDrivePermissionGranted && !isRequestingDrivePermission) {
-                                        onRequestDrivePermission?.invoke()
-                                    },
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isDrivePermissionGranted) {
-                                    EncrypzSuccessBg.copy(alpha = 0.7f)
-                                } else {
-                                    EncrypzBlue.copy(alpha = 0.14f)
-                                },
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isDrivePermissionGranted) EncrypzSuccessBorder else EncrypzBorderGlow
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                Spacer(Modifier.height(10.dp))
+                            } else {
+                                // Connected Google Account row showing the user's real selected email
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = EncrypzSuccessBg,
+                                    border = BorderStroke(1.dp, EncrypzSuccessBorder)
                                 ) {
                                     Row(
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Icon(
-                                            imageVector = if (isDrivePermissionGranted) Icons.Default.CheckCircle else Icons.Default.Info,
-                                            contentDescription = null,
-                                            tint = if (isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzBlueBright,
-                                            modifier = Modifier.size(14.dp)
-                                        )
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = EncrypzEmeraldBright,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = activeEmail,
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontWeight = FontWeight.Medium
+                                                ),
+                                                color = EncrypzText,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                         Text(
-                                            text = when {
-                                                driveSetupError != null -> driveSetupError
-                                                isDrivePermissionGranted -> "Google Drive 'Encrypz' folder ready for automatic uploads"
-                                                isRequestingDrivePermission -> "Requesting Google Drive 'Encrypz' folder permission..."
-                                                else -> "Google Drive 'Encrypz' folder permission required"
-                                            },
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzText
+                                            text = if (onBackToVaultList != null) "All vaults" else "Use another",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            color = EncrypzBlueBright,
+                                            modifier = Modifier
+                                                .padding(start = 8.dp)
+                                                .clickable {
+                                                    if (onBackToVaultList != null) {
+                                                        onBackToVaultList()
+                                                    } else {
+                                                        try {
+                                                            GoogleAuthConfig.createGoogleSignInClient(context).signOut()
+                                                        } catch (_: Exception) {}
+                                                        GoogleAuthConfig.clearSavedGoogleEmail(context)
+                                                        isGoogleSignedIn = false
+                                                        activeEmail = ""
+                                                        masterPassword = ""
+                                                        confirmPassword = ""
+                                                        pinInput = ""
+                                                        errorMessage = null
+                                                        infoMessage = null
+                                                        onGoogleSignInChanged?.invoke(false, null)
+                                                    }
+                                                }
                                         )
                                     }
-                                    if (!isDrivePermissionGranted && !isRequestingDrivePermission) {
+                                }
+
+                                Spacer(Modifier.height(10.dp))
+
+                                // Google Drive Folder Permission status & action row
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isDrivePermissionGranted && !isRequestingDrivePermission) {
+                                            onRequestDrivePermission?.invoke()
+                                        },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isDrivePermissionGranted) {
+                                        EncrypzSuccessBg.copy(alpha = 0.7f)
+                                    } else if (driveSetupError != null) {
+                                        EncrypzDangerBg.copy(alpha = 0.7f)
+                                    } else {
+                                        EncrypzBlue.copy(alpha = 0.14f)
+                                    },
+                                    border = BorderStroke(
+                                        1.dp,
+                                        when {
+                                            isDrivePermissionGranted -> EncrypzSuccessBorder
+                                            driveSetupError != null -> EncrypzDangerBorder
+                                            else -> EncrypzBorderGlow
+                                        }
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            if (isRequestingDrivePermission) {
+                                                androidx.compose.material3.CircularProgressIndicator(
+                                                    modifier = Modifier.size(14.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = EncrypzBlueBright
+                                                )
+                                            } else {
+                                                Icon(
+                                                    imageVector = if (isDrivePermissionGranted) Icons.Default.CheckCircle else Icons.Default.Info,
+                                                    contentDescription = null,
+                                                    tint = when {
+                                                        isDrivePermissionGranted -> EncrypzEmeraldBright
+                                                        driveSetupError != null -> EncrypzDangerLight
+                                                        else -> EncrypzBlueBright
+                                                    },
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = when {
+                                                    driveSetupError != null -> driveSetupError
+                                                    isDrivePermissionGranted -> "Google Drive permission ready"
+                                                    isRequestingDrivePermission -> "Requesting Google Drive permission..."
+                                                    else -> "Google Drive permission required"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = when {
+                                                    isDrivePermissionGranted -> EncrypzEmeraldBright
+                                                    driveSetupError != null -> EncrypzDangerLight
+                                                    else -> EncrypzText
+                                                }
+                                            )
+                                        }
+                                        if (!isDrivePermissionGranted && !isRequestingDrivePermission) {
+                                            Text(
+                                                text = "Grant",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    textDecoration = TextDecoration.Underline
+                                                ),
+                                                color = EncrypzBlueBright,
+                                                modifier = Modifier.padding(start = 8.dp)
+                                            )
+                                        } else if (!isDrivePermissionGranted && onRequestDrivePermissionViaBrowser != null) {
+                                            Text(
+                                                text = "Browser",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    textDecoration = TextDecoration.Underline
+                                                ),
+                                                color = EncrypzBlueBright,
+                                                modifier = Modifier
+                                                    .padding(start = 8.dp)
+                                                    .clickable { onRequestDrivePermissionViaBrowser() }
+                                            )
+                                        }
+                                    }
+                                }
+                                if (!isDrivePermissionGranted && driveSetupError != null && onRequestDrivePermissionViaBrowser != null) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 6.dp),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
                                         Text(
-                                            text = "Grant",
+                                            text = "Authorize in Browser instead",
                                             style = MaterialTheme.typography.labelSmall.copy(
                                                 fontWeight = FontWeight.SemiBold,
                                                 textDecoration = TextDecoration.Underline
                                             ),
                                             color = EncrypzBlueBright,
-                                            modifier = Modifier.padding(start = 8.dp)
+                                            modifier = Modifier.clickable { onRequestDrivePermissionViaBrowser() }
                                         )
                                     }
                                 }
@@ -1101,9 +1232,9 @@ fun LoginScreen(
                                 ) {
                                     Text(
                                         text = when {
-                                            isSubmitting -> "Verifying account..."
-                                            isCheckingAccountStatus -> "Checking account..."
-                                            isCreatingVault -> "Create account & open vault"
+                                            isSubmitting -> if (isCreatingVault) "Creating vault..." else "Unlocking vault..."
+                                            isCheckingAccountStatus -> "Checking Google Drive vault..."
+                                            isCreatingVault -> "Create vault"
                                             else -> "Unlock vault"
                                         },
                                         style = MaterialTheme.typography.labelLarge.copy(
@@ -1149,34 +1280,55 @@ fun LoginScreen(
                             HorizontalDivider(color = EncrypzBorder)
                             Spacer(Modifier.height(14.dp))
 
-                            // Switch between Unlock and Create Vault
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = if (isCreatingVault) "Already have a vault? " else "Setting up a new vault? ",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = EncrypzMuted
-                                )
-                                Text(
-                                    text = if (isCreatingVault) "Unlock existing" else "Create account",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        fontWeight = FontWeight.SemiBold,
-                                        textDecoration = TextDecoration.Underline
-                                    ),
-                                    color = EncrypzText,
-                                    modifier = Modifier.clickable {
-                                        if (isCreatingVault && !hasExistingVaultAccount && !isCheckingAccountStatus) {
-                                            errorMessage = "No Encrypz account exists for $activeEmail yet. Please create your account first."
-                                        } else {
+                            if (isVaultSelected && onRecoverWithKey != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Forgot password? ",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = EncrypzMuted
+                                    )
+                                    Text(
+                                        text = "Recover with Recovery Key",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontWeight = FontWeight.SemiBold,
+                                            textDecoration = TextDecoration.Underline
+                                        ),
+                                        color = EncrypzBlueBright,
+                                        modifier = Modifier.clickable {
+                                            showRecoveryDialog = true
+                                        }
+                                    )
+                                }
+                            } else {
+                                // Switch between Unlock and Create Vault
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (isCreatingVault) "Already have a vault? " else "Setting up a new vault? ",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = EncrypzMuted
+                                    )
+                                    Text(
+                                        text = if (isCreatingVault) "Unlock existing" else "Create new vault",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontWeight = FontWeight.SemiBold,
+                                            textDecoration = TextDecoration.Underline
+                                        ),
+                                        color = EncrypzText,
+                                        modifier = Modifier.clickable {
                                             isCreatingVault = !isCreatingVault
                                             errorMessage = null
                                             infoMessage = null
                                         }
-                                    }
-                                )
+                                    )
+                                }
                             }
                         }
                     }
@@ -1203,7 +1355,7 @@ fun LoginScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "V 1.0.0",
+                    text = "V 2.0.0",
                     style = MaterialTheme.typography.labelSmall,
                     color = EncrypzSubtleText
                 )
@@ -1232,6 +1384,113 @@ fun LoginScreen(
             }
         }
 
+        if (showRecoveryDialog && onRecoverWithKey != null) {
+            var recoveryKeyInput by remember { mutableStateOf("") }
+            var recoveryNewPass by remember { mutableStateOf("") }
+            var recoveryConfirmPass by remember { mutableStateOf("") }
+            var recoveryError by remember { mutableStateOf<String?>(null) }
+            var recovering by remember { mutableStateOf(false) }
+
+            AlertDialog(
+                onDismissRequest = { if (!recovering) showRecoveryDialog = false },
+                containerColor = EncrypzPanel,
+                titleContentColor = EncrypzText,
+                textContentColor = EncrypzMuted,
+                title = { Text("Recover Vault with Key") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            "Paste your Base32 Recovery Key and enter a new master password (12+ chars).",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        OutlinedTextField(
+                            value = recoveryKeyInput,
+                            onValueChange = { recoveryKeyInput = it; recoveryError = null },
+                            label = { Text("Recovery Key") },
+                            minLines = 2,
+                            maxLines = 4,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = EncrypzInput,
+                                unfocusedContainerColor = EncrypzInput,
+                                focusedBorderColor = EncrypzBlue,
+                                unfocusedBorderColor = EncrypzInputBorder,
+                                focusedTextColor = EncrypzText,
+                                unfocusedTextColor = EncrypzText
+                            )
+                        )
+                        OutlinedTextField(
+                            value = recoveryNewPass,
+                            onValueChange = { recoveryNewPass = it; recoveryError = null },
+                            label = { Text("New master password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = EncrypzInput,
+                                unfocusedContainerColor = EncrypzInput,
+                                focusedBorderColor = EncrypzBlue,
+                                unfocusedBorderColor = EncrypzInputBorder,
+                                focusedTextColor = EncrypzText,
+                                unfocusedTextColor = EncrypzText
+                            )
+                        )
+                        OutlinedTextField(
+                            value = recoveryConfirmPass,
+                            onValueChange = { recoveryConfirmPass = it; recoveryError = null },
+                            label = { Text("Confirm password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = EncrypzInput,
+                                unfocusedContainerColor = EncrypzInput,
+                                focusedBorderColor = EncrypzBlue,
+                                unfocusedBorderColor = EncrypzInputBorder,
+                                focusedTextColor = EncrypzText,
+                                unfocusedTextColor = EncrypzText
+                            )
+                        )
+                        recoveryError?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall, color = EncrypzDangerLight)
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        enabled = !recovering && recoveryKeyInput.isNotBlank() && recoveryNewPass.length >= 12,
+                        onClick = {
+                            if (recoveryNewPass != recoveryConfirmPass) {
+                                recoveryError = "Passwords do not match."
+                                return@Button
+                            }
+                            recovering = true
+                            loginScope.launch {
+                                val res = onRecoverWithKey.invoke(recoveryKeyInput, recoveryNewPass)
+                                recovering = false
+                                res.onSuccess {
+                                    showRecoveryDialog = false
+                                    infoMessage = "Master password updated. Unlock with your new password."
+                                    usePinMode = false
+                                }.onFailure { err ->
+                                    recoveryError = err.message ?: "Recovery failed."
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(100.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue)
+                    ) {
+                        Text(if (recovering) "Recovering..." else "Reset Password")
+                    }
+                },
+                dismissButton = {
+                    TextButton(enabled = !recovering, onClick = { showRecoveryDialog = false }) {
+                        Text("Cancel", color = EncrypzMuted)
+                    }
+                }
+            )
+        }
+
         // Info Modal matching Encrypz.UI AuthLayout.tsx
         activeInfoDialog?.let { dialogType ->
             AlertDialog(
@@ -1253,21 +1512,21 @@ fun LoginScreen(
                         when (dialogType) {
                             AuthInfoDialog.HELP_CENTRE -> {
                                 Text(
-                                    text = "How does client-side encryption work?",
+                                    text = "How does local zero-knowledge encryption work?",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = EncrypzText
                                 )
                                 Text(
-                                    text = "Your files are encrypted locally on your Android device using AES-256-GCM before being uploaded into the 'Encrypz' folder in your Google Drive.",
+                                    text = "Everything runs 100% on your phone with no external server or database. Your files are encrypted locally on this device using AES-256-GCM and AES-256-SIV before saving locally or syncing directly to your own Google Drive.",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                                 Text(
-                                    text = "Quick-Unlock PIN",
+                                    text = "Quick-Unlock PIN & Recovery Key",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = EncrypzText
                                 )
                                 Text(
-                                    text = "After your first login with your master password, you can set a 6 digit PIN for fast subsequent unlocks.",
+                                    text = "After unlocking with your master password, you can set a 6-digit PIN for fast local unlocks. Use your Base32 Recovery Key if you ever forget your master password.",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -1278,11 +1537,11 @@ fun LoginScreen(
                                     color = EncrypzText
                                 )
                                 Text(
-                                    text = "Your vault is protected with zero-knowledge cryptographic keys derived on your device. Because Encrypz does not store your plaintext master password, lost passwords cannot be recovered.",
+                                    text = "Your vault is protected with cryptographic keys derived strictly on your device (scrypt + RFC 3394 AES Key Wrap). Because Encrypz uses no server or database, lost passwords can only be recovered with your saved Recovery Key.",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                                 Text(
-                                    text = "All encrypted files stored in your connected Google Drive remain under your full ownership and control.",
+                                    text = "Local offline vaults stay on your phone, and Google Drive vaults remain directly under your own Google account.",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }

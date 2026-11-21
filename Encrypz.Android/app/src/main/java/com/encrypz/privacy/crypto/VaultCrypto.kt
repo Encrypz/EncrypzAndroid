@@ -66,7 +66,7 @@ object VaultCrypto {
 
     /**
      * Computes a deterministic, zero-knowledge PBKDF2-HMAC-SHA256 + SHA-256 password verifier hex string
-     * for storing & verifying the user's Master Password in MongoDB Atlas and LocalVaultStorage.
+     * for verifying legacy local vault unlock credentials in LocalVaultStorage.
      */
     fun computePasswordVerifierHex(password: String, salt: ByteArray): String {
         val wrappingKeyBytes = deriveSessionKeyFast(password, salt).encoded

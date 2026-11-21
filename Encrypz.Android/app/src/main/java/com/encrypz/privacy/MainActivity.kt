@@ -1,22 +1,24 @@
 package com.encrypz.privacy
 
-import android.graphics.Color
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.core.app.ActivityCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.core.app.ActivityCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.encrypz.privacy.auth.LoopbackGoogleOAuthServer
 import com.encrypz.privacy.theme.EncrypzTheme
 import com.encrypz.privacy.ui.vault.VaultViewModel
 
@@ -25,6 +27,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        LoopbackGoogleOAuthServer.setAppForeground(true)
         AppNotifications.createChannel(this)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -70,6 +73,22 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        LoopbackGoogleOAuthServer.setAppForeground(true)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        LoopbackGoogleOAuthServer.setAppForeground(true)
+    }
+
+    override fun onPause() {
+        LoopbackGoogleOAuthServer.setAppForeground(false)
+        super.onPause()
     }
 
     override fun onStop() {

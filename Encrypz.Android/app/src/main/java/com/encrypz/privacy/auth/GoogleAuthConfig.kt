@@ -17,8 +17,11 @@ import com.google.android.gms.common.api.ApiException
  */
 object GoogleAuthConfig {
     val CLIENT_ID: String = BuildConfig.GOOGLE_CLIENT_ID
-    // Native Google authorization does not use a client secret.
-    const val CLIENT_SECRET: String = ""
+    val CLIENT_SECRET: String = BuildConfig.GOOGLE_CLIENT_SECRET
+    val PROJECT_ID: String = BuildConfig.GOOGLE_PROJECT_ID
+    val AUTH_URI: String = BuildConfig.GOOGLE_AUTH_URI
+    val TOKEN_URI: String = BuildConfig.GOOGLE_TOKEN_URI
+    val AUTH_PROVIDER_X509_CERT_URL: String = BuildConfig.GOOGLE_CERT_URL
 
     const val SCOPE_DRIVE_APPDATA = "https://www.googleapis.com/auth/drive.appdata"
     const val SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"

@@ -13,8 +13,10 @@ val localProps = Properties().apply {
     }
 }
 
-fun localProp(key: String): String =
-    (localProps.getProperty(key) ?: System.getenv(key) ?: "").replace("\"", "\\\"")
+fun localProp(key: String, default: String = ""): String =
+    (localProps.getProperty(key)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(key)?.takeIf { it.isNotBlank() }
+        ?: default).replace("\"", "\\\"")
 
 android {
     namespace = "com.encrypz.privacy"
@@ -23,11 +25,23 @@ android {
         applicationId = "com.encrypz.privacy"
         minSdk = 24
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 11
+        versionName = "2.0.0"
 
-        buildConfigField("String", "ACCOUNT_API_BASE_URL", "\"${localProp("ACCOUNT_API_BASE_URL")}\"")
-        buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${localProp("GOOGLE_CLIENT_ID")}\"")
+        buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${localProp("GOOGLE_CLIENT_ID", "")}\"")
+        buildConfigField("String", "GOOGLE_CLIENT_SECRET", "\"${localProp("GOOGLE_CLIENT_SECRET", "")}\"")
+        buildConfigField("String", "GOOGLE_PROJECT_ID", "\"${localProp("GOOGLE_PROJECT_ID", "")}\"")
+        buildConfigField("String", "GOOGLE_AUTH_URI", "\"${localProp("GOOGLE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth")}\"")
+        buildConfigField("String", "GOOGLE_TOKEN_URI", "\"${localProp("GOOGLE_TOKEN_URI", "https://oauth2.googleapis.com/token")}\"")
+        buildConfigField("String", "GOOGLE_CERT_URL", "\"${localProp("GOOGLE_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs")}\"")
+    }
+
+    val releaseKeystoreExists = run {
+        val signingProps = Properties().apply {
+            val propsFile = rootProject.file("signing.properties")
+            if (propsFile.exists()) propsFile.inputStream().use { load(it) }
+        }
+        rootProject.file(signingProps.getProperty("storeFile", "signing/upload-keystore.jks")).exists()
     }
 
     signingConfigs {
@@ -40,13 +54,17 @@ android {
             storePassword = signingProps.getProperty("storePassword") ?: System.getenv("ENCRYPZ_STORE_PASSWORD")
             keyAlias = signingProps.getProperty("keyAlias", "encrypz-upload")
             keyPassword = signingProps.getProperty("keyPassword") ?: System.getenv("ENCRYPZ_KEY_PASSWORD")
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = false
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (releaseKeystoreExists) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

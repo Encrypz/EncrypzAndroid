@@ -69,7 +69,7 @@ private class FingerprintStore(context: Context, email: String) {
 @Composable
 fun FingerprintControl(viewModel: VaultViewModel, email: String, setup: Boolean,
     autoPrompt: Boolean = false, onAutoPrompt: () -> Unit = {}, showControls: Boolean = true,
-    onUnlocked: () -> Unit = {}) {
+    onUnlocked: () -> Unit = {}, subtitle: String = email) {
     val context = LocalContext.current
     val activity = context.fragmentActivity() ?: return
     if (email.isBlank()) return
@@ -120,7 +120,7 @@ fun FingerprintControl(viewModel: VaultViewModel, email: String, setup: Boolean,
                     prompt = biometricPrompt
                     biometricPrompt.authenticate(BiometricPrompt.PromptInfo.Builder()
                         .setTitle(if (setup) "Set up fingerprint unlock" else "Unlock Encrypz")
-                        .setSubtitle(email)
+                        .setSubtitle(subtitle)
                         .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
                         .setNegativeButtonText("Cancel").build(), BiometricPrompt.CryptoObject(cipher))
                 } catch (_: Exception) {

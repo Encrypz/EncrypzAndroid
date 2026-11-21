@@ -122,7 +122,7 @@ fun EncrypzAmbientBackground(
 @Composable
 fun EncrypzFloatingNavBar(
     statusText: String = "Zero-Knowledge",
-    versionText: String = "v1.0.0",
+    versionText: String = "v2.0.0",
     modifier: Modifier = Modifier,
     trailingContent: (@Composable () -> Unit)? = null
 ) {

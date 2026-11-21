@@ -1,7 +1,10 @@
 package com.encrypz.privacy.ui.vault
 
 import com.encrypz.privacy.drive.GoogleDriveSyncManager
+import com.encrypz.privacy.vault.VaultStorageType
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -211,11 +214,14 @@ private fun NotificationsTabContent() {
 fun VaultScreen(
     onLogout: () -> Unit,
     onRequestDrivePermission: () -> Unit = {},
+    onRequestDrivePermissionViaBrowser: () -> Unit = {},
+    onSwitchVault: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: VaultViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val copyToClipboard: (String, String) -> Unit = { label, text ->
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
@@ -227,6 +233,8 @@ fun VaultScreen(
     var showCreateNoteDialog by rememberSaveable { mutableStateOf(false) }
     var showConfigBackupDialog by rememberSaveable { mutableStateOf(false) }
     var showPinSetupDialog by rememberSaveable { mutableStateOf(false) }
+    var showChangePasswordDialog by rememberSaveable { mutableStateOf(false) }
+    var showRecoveryKeyDialog by rememberSaveable { mutableStateOf(false) }
     var selectedPhotoId by remember { mutableStateOf<String?>(null) }
     var photoToMove by remember { mutableStateOf<VaultFileEntry?>(null) }
     var photoToDelete by remember { mutableStateOf<VaultFileEntry?>(null) }
@@ -235,10 +243,12 @@ fun VaultScreen(
     var selectedFolderForDetails by remember { mutableStateOf<VaultFolder?>(null) }
     var filePendingDecryptedExport by remember { mutableStateOf<VaultFileEntry?>(null) }
 
+    val isLocalVault = state.activeVault?.isOfflineLocal == true
+
     // Ensure local encrypted vault storage and saved Google account email are loaded
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.ensureLocalStorageLoaded(context)
-        if (state.connectedGoogleEmail.isBlank()) {
+        if (!isLocalVault && state.connectedGoogleEmail.isBlank()) {
             val saved = com.encrypz.privacy.auth.GoogleAuthConfig.getSavedGoogleEmail(context)
             if (!saved.isNullOrBlank()) {
                 viewModel.connectGoogleAccount(saved, context)
@@ -284,6 +294,7 @@ fun VaultScreen(
     androidx.compose.runtime.LaunchedEffect(state.pendingDriveConsentIntent) {
         val consentIntent = state.pendingDriveConsentIntent
         if (consentIntent != null) {
+            viewModel.consumeDriveConsent()
             try {
                 driveConsentLauncher.launch(consentIntent)
             } catch (_: Exception) {
@@ -395,7 +406,11 @@ fun VaultScreen(
                                 )
                             }
                             Text(
-                                text = state.connectedGoogleEmail.ifBlank { "Encrypted and private · Zero-Knowledge" },
+                                text = when {
+                                    isLocalVault -> "${state.activeVault?.name ?: "Local Vault"} · Offline v2"
+                                    state.activeVault != null -> "${state.activeVault!!.name} · ${state.connectedGoogleEmail}"
+                                    else -> state.connectedGoogleEmail.ifBlank { "Encrypz Vault v2 · Zero-Knowledge" }
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = EncrypzMuted,
                                 maxLines = 1,
@@ -408,8 +423,8 @@ fun VaultScreen(
                             onClick = { viewModel.syncVaultWithGoogleDrive(context) }
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CloudDone,
-                                contentDescription = "Sync with Google Drive",
+                                imageVector = if (isLocalVault) Icons.Default.VerifiedUser else Icons.Default.CloudDone,
+                                contentDescription = if (isLocalVault) "Refresh local vault" else "Sync with Google Drive",
                                 tint = EncrypzEmeraldBright
                             )
                         }
@@ -616,11 +631,18 @@ fun VaultScreen(
                         viewModel = viewModel,
                         state = state,
                         onRequestDrivePermission = onRequestDrivePermission,
+                        onRequestDrivePermissionViaBrowser = onRequestDrivePermissionViaBrowser,
                         onToggleScreenshotProtection = viewModel::setScreenshotProtection,
                         onConfigurePinClick = { showPinSetupDialog = true },
                         onRemovePinClick = { viewModel.removeUnlockPin(context) },
                         onSelectAutoLockTimeout = viewModel::setAutoLockTimeout,
                         onShowBackupConfig = { showConfigBackupDialog = true },
+                        onShowChangePassword = { showChangePasswordDialog = true },
+                        onShowRecoveryKey = { showRecoveryKeyDialog = true },
+                        onSwitchVault = {
+                            viewModel.lockVault()
+                            onSwitchVault()
+                        },
                         onLockVault = {
                             viewModel.lockVault()
                             onLogout()
@@ -653,7 +675,11 @@ fun VaultScreen(
                     color = EncrypzText
                 )
                 Text(
-                    text = "Files are encrypted client-side with AES-256-GCM (.enc) and saved to your Google Drive.",
+                    text = if (isLocalVault) {
+                        "Files are encrypted client-side with Encrypz Vault v2 (EPZ2 64 KiB AES-256-GCM + AES-SIV) and stored locally."
+                    } else {
+                        "Files are encrypted client-side with Encrypz Vault v2 and saved to your Google Drive vault."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = EncrypzMuted
                 )
@@ -662,7 +688,7 @@ fun VaultScreen(
 
                 AddActionRowCard(
                     icon = Icons.Default.UploadFile,
-                    title = if (state.isImportingFiles) "Preparing files..." else "Upload files to Google Drive",
+                    title = if (state.isImportingFiles) "Preparing files..." else if (isLocalVault) "Import & encrypt files locally" else "Upload encrypted files to Drive",
                     subtitle = "Select up to 30 photos, videos, or documents (15 MiB per file)",
                     tint = EncrypzBlue,
                     onClick = {
@@ -674,7 +700,7 @@ fun VaultScreen(
                 AddActionRowCard(
                     icon = Icons.AutoMirrored.Filled.NoteAdd,
                     title = "Create Encrypted Text / Secret Note",
-                    subtitle = "Encrypt passwords or recovery phrases (.enc) & save to Google Drive",
+                    subtitle = "Encrypt passwords or notes with per-file AES-256-GCM keys",
                     tint = EncrypzEmeraldBright,
                     onClick = {
                         showAddSheet = false
@@ -685,7 +711,7 @@ fun VaultScreen(
                 AddActionRowCard(
                     icon = Icons.Default.CreateNewFolder,
                     title = "New Encrypted Folder",
-                    subtitle = "Organize files with encrypted folder metadata",
+                    subtitle = "Create a synced Encrypz obfuscated folder (folder.epz)",
                     tint = EncrypzBlueBright,
                     onClick = {
                         showAddSheet = false
@@ -693,16 +719,18 @@ fun VaultScreen(
                     }
                 )
 
-                AddActionRowCard(
-                    icon = Icons.Default.CloudDone,
-                    title = "Sync / Import Encrypted (.enc) from Google Drive",
-                    subtitle = "Pull encrypted .enc files from your Google Drive vault",
-                    tint = EncrypzGlowCyan,
-                    onClick = {
-                        showAddSheet = false
-                        viewModel.syncVaultWithGoogleDrive(context)
-                    }
-                )
+                if (!isLocalVault) {
+                    AddActionRowCard(
+                        icon = Icons.Default.CloudDone,
+                        title = "Sync Vault from Google Drive",
+                        subtitle = "Pull encrypted folders and files from Google Drive",
+                        tint = EncrypzGlowCyan,
+                        onClick = {
+                            showAddSheet = false
+                            viewModel.syncVaultWithGoogleDrive(context)
+                        }
+                    )
+                }
             }
         }
     }
@@ -794,17 +822,71 @@ fun VaultScreen(
                 // Cryptographic & File Metadata Specs Box
                 EncrypzSpecsBox(
                     specs = listOf(
-                        "Encrypted File (.enc)" to file.name,
-                        "Encryption Cipher" to "AES-256-GCM (128-bit Auth Tag)",
+                        "File Name" to file.cleanFileName,
+                        "Encryption Cipher" to if (state.activeVault?.formatVersion == 2) {
+                            "Encrypz Vault v2 (EPZ2 · 64 KiB)"
+                        } else {
+                            "AES-256-GCM (128-bit Auth Tag)"
+                        },
                         "Original Size" to formatFileSize(file.sizeBytes),
-                        "Encrypted Blob Size" to formatFileSize(file.encryptedPayload.size.toLong()),
-                        "96-bit GCM IV" to "0x${file.ivHex.take(16)}...",
-                        "Google Drive Status" to file.driveSyncState.badgeLabel,
-                        "Google Account" to file.googleAccountEmail.ifBlank {
-                            state.connectedGoogleEmail.ifBlank { "Google Drive Vault" }
-                        }
+                        "Encrypted Size" to formatFileSize(file.encryptedPayload.size.toLong()),
+                        "Header / IV" to "0x${file.ivHex.take(16)}...",
+                        "Storage Status" to file.driveSyncState.badgeLabel
                     )
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            filePendingDecryptedExport = file
+                            selectedFileForDetails = null
+                            decryptedExportLauncher.launch(
+                                GoogleDriveSyncManager.createDecryptedExportDocumentIntent(file.cleanFileName)
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(100.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Export", style = MaterialTheme.typography.labelMedium)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            selectedFileForDetails = null
+                            photoToMove = file
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(100.dp),
+                        border = BorderStroke(1.dp, EncrypzBorderGlow),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = EncrypzSecondaryBg,
+                            contentColor = EncrypzBlueBright
+                        )
+                    ) {
+                        Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Move", style = MaterialTheme.typography.labelMedium)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            selectedFileForDetails = null
+                            viewModel.moveFileToRecycleBin(file.id, context)
+                        },
+                        shape = RoundedCornerShape(100.dp),
+                        border = BorderStroke(1.dp, EncrypzDangerBorder),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = EncrypzDangerBg,
+                            contentColor = EncrypzDangerLight
+                        )
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Move to Recycle Bin", modifier = Modifier.size(16.dp))
+                    }
+                }
 
             }
         }
@@ -1209,6 +1291,176 @@ fun VaultScreen(
                     }
                 ) {
                     Text("Cancel", color = EncrypzMuted)
+                }
+            }
+        )
+    }
+
+    if (showChangePasswordDialog) {
+        var currentPassword by remember { mutableStateOf("") }
+        var newPassword by remember { mutableStateOf("") }
+        var confirmPassword by remember { mutableStateOf("") }
+        var changeError by remember { mutableStateOf<String?>(null) }
+        var changing by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { if (!changing) showChangePasswordDialog = false },
+            containerColor = EncrypzPanel,
+            titleContentColor = EncrypzText,
+            textContentColor = EncrypzMuted,
+            title = { Text("Change Master Password") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Re-wraps masterkey.encrypz with a new scrypt salt. Existing encrypted files are not modified.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = currentPassword,
+                        onValueChange = { currentPassword = it; changeError = null },
+                        label = { Text("Current master password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = EncrypzInput,
+                            unfocusedContainerColor = EncrypzInput,
+                            focusedBorderColor = EncrypzBlue,
+                            unfocusedBorderColor = EncrypzInputBorder,
+                            focusedTextColor = EncrypzText,
+                            unfocusedTextColor = EncrypzText
+                        )
+                    )
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it; changeError = null },
+                        label = { Text("New master password (12+ chars)") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = EncrypzInput,
+                            unfocusedContainerColor = EncrypzInput,
+                            focusedBorderColor = EncrypzBlue,
+                            unfocusedBorderColor = EncrypzInputBorder,
+                            focusedTextColor = EncrypzText,
+                            unfocusedTextColor = EncrypzText
+                        )
+                    )
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it; changeError = null },
+                        label = { Text("Confirm new password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = EncrypzInput,
+                            unfocusedContainerColor = EncrypzInput,
+                            focusedBorderColor = EncrypzBlue,
+                            unfocusedBorderColor = EncrypzInputBorder,
+                            focusedTextColor = EncrypzText,
+                            unfocusedTextColor = EncrypzText
+                        )
+                    )
+                    changeError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = EncrypzDangerLight) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !changing && currentPassword.isNotBlank() && newPassword.length >= 12,
+                    onClick = {
+                        if (newPassword != confirmPassword) {
+                            changeError = "New passwords do not match."
+                            return@Button
+                        }
+                        changing = true
+                        scope.launch {
+                            val res = viewModel.changeMasterPassword(context, currentPassword, newPassword)
+                            changing = false
+                            res.onSuccess {
+                                showChangePasswordDialog = false
+                            }.onFailure { err ->
+                                changeError = err.message ?: "Failed to update master password."
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(100.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue)
+                ) {
+                    Text(if (changing) "Updating..." else "Update Password")
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !changing, onClick = { showChangePasswordDialog = false }) {
+                    Text("Cancel", color = EncrypzMuted)
+                }
+            }
+        )
+    }
+
+    if (showRecoveryKeyDialog) {
+        val recoveryKey = remember { viewModel.getActiveRecoveryKey() }
+        var copiedRecovery by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showRecoveryKeyDialog = false },
+            containerColor = EncrypzPanel,
+            titleContentColor = EncrypzText,
+            textContentColor = EncrypzMuted,
+            title = { Text("Encrypz Recovery Key") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (recoveryKey != null) {
+                        Text(
+                            "Store this key securely offline. Anyone with this key and your vault.encrypz file can reset the master password.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = EncrypzDeepBlack,
+                            border = BorderStroke(1.dp, EncrypzGlassBorder)
+                        ) {
+                            Text(
+                                text = recoveryKey,
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp
+                                ),
+                                color = EncrypzBlueSoft
+                            )
+                        }
+                    } else {
+                        Text(
+                            "Recovery key is available for Encrypz Vault v2 vaults.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (recoveryKey != null) {
+                    Button(
+                        onClick = {
+                            copyToClipboard("Encrypz Recovery Key", recoveryKey)
+                            copiedRecovery = true
+                        },
+                        shape = RoundedCornerShape(100.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (copiedRecovery) EncrypzEmeraldBright else EncrypzBlue,
+                            contentColor = if (copiedRecovery) EncrypzBlack else EncrypzText
+                        )
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (copiedRecovery) "Copied!" else "Copy Recovery Key")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecoveryKeyDialog = false }) {
+                    Text("Close", color = EncrypzMuted)
                 }
             }
         )
@@ -1669,13 +1921,22 @@ private fun SecurityProfileTabContent(
     viewModel: VaultViewModel,
     state: VaultUiState,
     onRequestDrivePermission: () -> Unit,
+    onRequestDrivePermissionViaBrowser: () -> Unit,
     onToggleScreenshotProtection: (Boolean) -> Unit,
     onConfigurePinClick: () -> Unit,
     onRemovePinClick: () -> Unit,
     onSelectAutoLockTimeout: (AutoLockTimeout) -> Unit,
     onShowBackupConfig: () -> Unit,
+    onShowChangePassword: () -> Unit,
+    onShowRecoveryKey: () -> Unit,
+    onSwitchVault: () -> Unit,
     onLockVault: () -> Unit
 ) {
+    val isLocalVault = state.activeVault?.isOfflineLocal == true
+    val isEncrypzV2 = state.activeVault?.formatVersion == 2
+    val biometricScopeKey = state.activeVault?.id ?: state.connectedGoogleEmail
+    val biometricSubtitle = state.activeVault?.name ?: state.connectedGoogleEmail
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -1686,69 +1947,97 @@ private fun SecurityProfileTabContent(
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        EncrypzCardIconBox(icon = Icons.Outlined.CloudSync, size = 46.dp)
+                        EncrypzCardIconBox(
+                            icon = if (isLocalVault) Icons.Default.Shield else Icons.Outlined.CloudSync,
+                            size = 46.dp
+                        )
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Google Drive backup", style = MaterialTheme.typography.titleMedium,
-                                color = EncrypzText)
-                            Text(state.connectedGoogleEmail.ifBlank { "Connect your Google account" },
-                                style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
+                            Text(
+                                text = state.activeVault?.name ?: "Encrypted Vault",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = EncrypzText
+                            )
+                            Text(
+                                text = if (isLocalVault) {
+                                    "Offline Local Storage · No Database"
+                                } else {
+                                    state.connectedGoogleEmail.ifBlank { "Connect your Google account" }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = EncrypzMuted
+                            )
                         }
                     }
                     HorizontalDivider(color = EncrypzBorder)
-                    Row(verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Icon(if (state.isDrivePermissionGranted) Icons.Outlined.VerifiedUser else Icons.Outlined.CloudOff,
-                            contentDescription = null, modifier = Modifier.size(22.dp),
-                            tint = if (state.isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzBlueBright)
-                        Column(modifier = Modifier.weight(1f)) {
+                    if (!isLocalVault) {
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Icon(if (state.isDrivePermissionGranted) Icons.Outlined.VerifiedUser else Icons.Outlined.CloudOff,
+                                contentDescription = null, modifier = Modifier.size(22.dp),
+                                tint = if (state.isDrivePermissionGranted) EncrypzEmeraldBright else EncrypzBlueBright)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(when {
+                                    state.isRequestingDrivePermission -> "Setting up Google Drive..."
+                                    state.isDrivePermissionGranted -> "Encrypz Drive sync ready"
+                                    else -> "Drive access required"
+                                }, style = MaterialTheme.typography.labelLarge, color = EncrypzText)
+                                Text("Files and folders are encrypted locally with Encrypz Vault v2 (AES-SIV + 64 KiB AES-GCM) before syncing to Drive.",
+                                    style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
+                            }
+                        }
+                        state.driveSetupError?.let { error ->
+                            Text(error, style = MaterialTheme.typography.bodySmall, color = EncrypzDanger,
+                                modifier = Modifier.fillMaxWidth()
+                                    .background(EncrypzDangerBg, RoundedCornerShape(12.dp)).padding(12.dp))
+                        }
+                        Button(
+                            onClick = onRequestDrivePermission,
+                            enabled = !state.isRequestingDrivePermission,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue,
+                                contentColor = Color.White)
+                        ) {
+                            if (state.isRequestingDrivePermission) {
+                                androidx.compose.material3.CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = EncrypzBlueBright)
+                            } else {
+                                Icon(Icons.Outlined.VerifiedUser, contentDescription = null, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.width(10.dp))
                             Text(when {
-                                state.isRequestingDrivePermission -> "Setting up Google Drive..."
-                                state.isDrivePermissionGranted -> "Automatic backup is ready"
-                                else -> "Drive access required"
-                            }, style = MaterialTheme.typography.labelLarge, color = EncrypzText)
-                            Text("Files are encrypted on your device and saved automatically to Encrypz in My Drive.",
-                                style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
+                                state.isRequestingDrivePermission -> "Connecting..."
+                                state.isDrivePermissionGranted -> "Check access & sync vault"
+                                else -> "Allow Google Drive access"
+                            }, style = MaterialTheme.typography.labelLarge)
                         }
-                    }
-                    state.driveSetupError?.let { error ->
-                        Text(error, style = MaterialTheme.typography.bodySmall, color = EncrypzDanger,
-                            modifier = Modifier.fillMaxWidth()
-                                .background(EncrypzDangerBg, RoundedCornerShape(12.dp)).padding(12.dp))
-                    }
-                    Button(
-                        onClick = onRequestDrivePermission,
-                        enabled = !state.isRequestingDrivePermission,
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = EncrypzBlue,
-                            contentColor = Color.White)
-                    ) {
-                        if (state.isRequestingDrivePermission) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = EncrypzBlueBright)
-                        } else {
-                            Icon(Icons.Outlined.VerifiedUser, contentDescription = null, modifier = Modifier.size(20.dp))
+                        if (!state.isDrivePermissionGranted &&
+                            (state.driveSetupError != null || state.isRequestingDrivePermission)
+                        ) {
+                            TextButton(
+                                onClick = onRequestDrivePermissionViaBrowser,
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Text(
+                                    text = "Authorize Google Drive in Browser",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = EncrypzBlueBright
+                                )
+                            }
                         }
-                        Spacer(Modifier.width(10.dp))
-                        Text(when {
-                            state.isRequestingDrivePermission -> "Connecting..."
-                            state.isDrivePermissionGranted -> "Check access & sync files"
-                            else -> "Allow Google Drive access"
-                        }, style = MaterialTheme.typography.labelLarge)
-                    }
-                    Text("Google asks for consent only when access is needed. You can retry here if setup is cancelled.",
-                        style = MaterialTheme.typography.bodySmall, color = EncrypzMuted)
-                    Row(verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Outlined.FolderOpen, contentDescription = null,
-                            modifier = Modifier.size(18.dp), tint = EncrypzMuted)
-                        Text("My Drive / Encrypz", style = MaterialTheme.typography.labelMedium, color = EncrypzMuted)
+                    } else {
+                        Text(
+                            text = "All keys, vault.encrypz, masterkey.encrypz, and obfuscated vault/XX/YYYY files are stored locally on this device.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = EncrypzMuted
+                        )
                     }
                     EncrypzSpecsBox(specs = listOf(
-                        "Saved to Drive" to "${state.syncedToDriveCount} files",
-                        "Encrypted on device" to "${state.activeFileCount} files",
-                        "Encryption" to "AES-256-GCM"
+                        "Vault Architecture" to if (isEncrypzV2) "Encrypz Vault V2" else "Legacy Format 1",
+                        "KDF & Key Wrap" to if (isEncrypzV2) "scrypt (N=32768) + RFC 3394" else "PBKDF2-HMAC-SHA256",
+                        "Filename & Content" to if (isEncrypzV2) "AES-SIV (.epz) + 64 KiB AES-GCM" else "AES-256-GCM",
+                        "Encrypted files" to "${state.activeFileCount} files (${state.activeFolderCount} folders)"
                     ))
                 }
             }
@@ -1826,7 +2115,7 @@ private fun SecurityProfileTabContent(
 
                     HorizontalDivider(color = EncrypzBorder)
 
-                    com.encrypz.privacy.auth.FingerprintControl(viewModel, state.connectedGoogleEmail, setup = true)
+                    com.encrypz.privacy.auth.FingerprintControl(viewModel, biometricScopeKey, setup = true, subtitle = biometricSubtitle)
                     HorizontalDivider(color = EncrypzBorder)
 
                     // Quick-Unlock PIN Management
@@ -1935,6 +2224,42 @@ private fun SecurityProfileTabContent(
                         color = EncrypzMuted
                     )
 
+                    if (isEncrypzV2) {
+                        OutlinedButton(
+                            onClick = onShowChangePassword,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(100.dp),
+                            border = BorderStroke(1.dp, EncrypzBorderGlow),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = EncrypzSecondaryBg,
+                                contentColor = EncrypzBlueBright
+                            )
+                        ) {
+                            Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Change Master Password")
+                        }
+
+                        OutlinedButton(
+                            onClick = onShowRecoveryKey,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp),
+                            shape = RoundedCornerShape(100.dp),
+                            border = BorderStroke(1.dp, EncrypzBorderGlow),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = EncrypzSecondaryBg,
+                                contentColor = EncrypzEmeraldBright
+                            )
+                        ) {
+                            Icon(imageVector = Icons.Default.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("View / Copy Recovery Key")
+                        }
+                    }
+
                     OutlinedButton(
                         onClick = onShowBackupConfig,
                         modifier = Modifier
@@ -1954,6 +2279,21 @@ private fun SecurityProfileTabContent(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text("Back up vault configuration (.json)")
+                    }
+
+                    OutlinedButton(
+                        onClick = onSwitchVault,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp),
+                        shape = RoundedCornerShape(100.dp),
+                        border = BorderStroke(1.dp, EncrypzBorder),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = EncrypzInput,
+                            contentColor = EncrypzText
+                        )
+                    ) {
+                        Text("Switch Vault (All Vaults)")
                     }
 
                     Button(

@@ -1,0 +1,8 @@
+# Copy this file to Encrypz.Android/local.properties (gitignored) and fill in your local SDK & OAuth values.
+sdk.dir=/path/to/android/sdk
+GOOGLE_CLIENT_ID=REPLACE_WITH_GOOGLE_OAUTH_CLIENT_ID
+GOOGLE_CLIENT_SECRET=REPLACE_WITH_GOOGLE_OAUTH_CLIENT_SECRET
+GOOGLE_PROJECT_ID=REPLACE_WITH_GOOGLE_CLOUD_PROJECT_ID
+GOOGLE_AUTH_URI=https://accounts.google.com/o/oauth2/auth
+GOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token
+GOOGLE_CERT_URL=https://www.googleapis.com/oauth2/v1/certs

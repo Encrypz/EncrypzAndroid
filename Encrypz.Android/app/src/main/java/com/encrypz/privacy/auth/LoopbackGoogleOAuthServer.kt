@@ -1,7 +1,11 @@
 package com.encrypz.privacy.auth
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.util.Base64
 import com.encrypz.privacy.MainActivity
@@ -9,6 +13,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +24,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
@@ -24,6 +32,7 @@ import java.net.ServerSocket
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -40,8 +49,10 @@ object LoopbackGoogleOAuthServer {
 
     private const val LOOPBACK_PORT = 5207
     const val REDIRECT_URI = "http://localhost:5207/api/Auth/google-callback"
-    private const val GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
-    private const val GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+    private val GOOGLE_AUTH_ENDPOINT: String
+        get() = GoogleAuthConfig.AUTH_URI.ifBlank { "https://accounts.google.com/o/oauth2/auth" }
+    private val GOOGLE_TOKEN_ENDPOINT: String
+        get() = GoogleAuthConfig.TOKEN_URI.ifBlank { "https://oauth2.googleapis.com/token" }
     private const val GOOGLE_USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v2/userinfo"
 
     private const val PREFS_NAME = "encrypz_oauth_tokens_prefs"
@@ -55,6 +66,45 @@ object LoopbackGoogleOAuthServer {
     @Volatile
     private var activeServerSocket: ServerSocket? = null
 
+    @Volatile
+    private var activeAuthDeferred: CompletableDeferred<CallbackOutcome>? = null
+
+    @Volatile
+    private var hasForegroundLifecycleTracking: Boolean = false
+
+    private val appInForeground = MutableStateFlow(false)
+
+    fun setAppForeground(inForeground: Boolean) {
+        hasForegroundLifecycleTracking = true
+        appInForeground.value = inForeground
+    }
+
+    internal fun resetForegroundTrackingForTest() {
+        hasForegroundLifecycleTracking = false
+        appInForeground.value = false
+    }
+
+    private suspend fun waitForAppForegroundIfNeeded() {
+        if (!hasForegroundLifecycleTracking || appInForeground.value) return
+        val restored = withTimeoutOrNull(30_000L) {
+            appInForeground.first { it }
+        } ?: false
+        if (restored) {
+            delay(300L)
+        }
+    }
+
+    private fun openHttpConnection(context: Context?, url: URL): HttpURLConnection {
+        if (context != null) {
+            val activeConn = runCatching {
+                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                cm?.activeNetwork?.openConnection(url) as? HttpURLConnection
+            }.getOrNull()
+            if (activeConn != null) return activeConn
+        }
+        return url.openConnection() as HttpURLConnection
+    }
+
     data class OAuthTokenBundle(
         val accessToken: String,
         val refreshToken: String?,
@@ -62,10 +112,39 @@ object LoopbackGoogleOAuthServer {
         val expiresInSeconds: Long
     )
 
+    sealed class OAuthLaunchResult {
+        data class Success(val bundle: OAuthTokenBundle) : OAuthLaunchResult()
+        data class Failure(val reason: String) : OAuthLaunchResult()
+    }
+
+    private sealed class CallbackOutcome {
+        data class Code(val code: String) : CallbackOutcome()
+        data class Error(val error: String) : CallbackOutcome()
+        data object Cancelled : CallbackOutcome()
+    }
+
+    fun cancelPendingAuthorization() {
+        val deferred = activeAuthDeferred
+        activeAuthDeferred = null
+        deferred?.complete(CallbackOutcome.Cancelled)
+        val socket = activeServerSocket
+        activeServerSocket = null
+        try {
+            socket?.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private tailrec fun findActivity(context: Context): Activity? = when (context) {
+        is Activity -> context
+        is ContextWrapper -> findActivity(context.baseContext)
+        else -> null
+    }
+
     /**
      * Returns true if we have a non-expired access token or a saved refresh token for [email].
      */
-    fun hasCachedOrRefreshToken(context: Context, email: String, fallbackRefreshTokenFromDb: String? = null): Boolean {
+    fun hasCachedOrRefreshToken(context: Context, email: String, fallbackRefreshToken: String? = null): Boolean {
         val cleanEmail = email.trim().lowercase()
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
@@ -78,7 +157,7 @@ object LoopbackGoogleOAuthServer {
         }
         val refreshToken = prefs.getString("$KEY_REFRESH_TOKEN_PREFIX$cleanEmail", null)
             ?.takeIf { it.isNotBlank() }
-            ?: fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
+            ?: fallbackRefreshToken?.takeIf { it.isNotBlank() }
         return !refreshToken.isNullOrBlank()
     }
 
@@ -102,7 +181,7 @@ object LoopbackGoogleOAuthServer {
     suspend fun getValidAccessTokenOrRefresh(
         context: Context,
         email: String,
-        fallbackRefreshTokenFromDb: String? = null
+        fallbackRefreshToken: String? = null
     ): String? = withContext(Dispatchers.IO) {
         val cleanEmail = email.trim().lowercase()
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -118,10 +197,10 @@ object LoopbackGoogleOAuthServer {
 
         val refreshToken = prefs.getString("$KEY_REFRESH_TOKEN_PREFIX$cleanEmail", null)
             ?.takeIf { it.isNotBlank() }
-            ?: fallbackRefreshTokenFromDb?.takeIf { it.isNotBlank() }
+            ?: fallbackRefreshToken?.takeIf { it.isNotBlank() }
 
         if (!refreshToken.isNullOrBlank()) {
-            val refreshed = exchangeRefreshToken(refreshToken)
+            val refreshed = exchangeRefreshToken(context, refreshToken)
             if (refreshed != null) {
                 saveTokenBundle(context, cleanEmail.ifBlank { refreshed.email.orEmpty() }, refreshed)
                 return@withContext refreshed.accessToken
@@ -166,30 +245,56 @@ object LoopbackGoogleOAuthServer {
     suspend fun authorizeViaLoopbackBrowser(
         context: Context,
         loginHintEmail: String?
-    ): OAuthTokenBundle? = authMutex.withLock {
-        // If another (concurrent) login step already obtained permission, reuse it — never prompt twice.
-        val hint = loginHintEmail?.trim().orEmpty()
-        if (hint.contains("@")) {
-            val existing = getValidAccessTokenOrRefresh(context, hint)
-            if (!existing.isNullOrBlank()) {
-                return@withLock OAuthTokenBundle(
-                    accessToken = existing,
-                    refreshToken = getSavedRefreshToken(context, hint),
-                    email = hint,
-                    expiresInSeconds = 3000L
-                )
+    ): OAuthTokenBundle? =
+        (authorizeViaLoopbackBrowserWithStatus(context, loginHintEmail, forcePrompt = false) as? OAuthLaunchResult.Success)?.bundle
+
+    suspend fun authorizeViaLoopbackBrowserWithStatus(
+        context: Context,
+        loginHintEmail: String?,
+        forcePrompt: Boolean = false
+    ): OAuthLaunchResult {
+        cancelPendingAuthorization()
+        return authMutex.withLock {
+            val hint = loginHintEmail?.trim().orEmpty()
+            if (!forcePrompt && hint.contains("@")) {
+                val existing = getValidAccessTokenOrRefresh(context, hint)
+                if (!existing.isNullOrBlank()) {
+                    return@withLock OAuthLaunchResult.Success(
+                        OAuthTokenBundle(
+                            accessToken = existing,
+                            refreshToken = getSavedRefreshToken(context, hint),
+                            email = hint,
+                            expiresInSeconds = 3000L
+                        )
+                    )
+                }
+            }
+            authorizeViaLoopbackBrowserInternal(context, loginHintEmail)
+        }
+    }
+
+    private suspend fun bindLoopbackServerSocket(): ServerSocket? {
+        for (attempt in 0 until 2) {
+            try {
+                return ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(LOOPBACK_PORT), 50)
+                    soTimeout = 180_000
+                }
+            } catch (_: Exception) {
+                if (attempt == 0) delay(150L)
             }
         }
-        authorizeViaLoopbackBrowserInternal(context, loginHintEmail)
+        return null
     }
 
     private suspend fun authorizeViaLoopbackBrowserInternal(
         context: Context,
         loginHintEmail: String?
-    ): OAuthTokenBundle? = withContext(oauthScope.coroutineContext) {
+    ): OAuthLaunchResult = withContext(oauthScope.coroutineContext) {
         val appContext = context.applicationContext
         if (GoogleAuthConfig.CLIENT_ID.isBlank() || GoogleAuthConfig.CLIENT_SECRET.isBlank()) {
-            return@withContext null
+            return@withContext OAuthLaunchResult.Failure("Google OAuth client is not configured.")
         }
 
         try {
@@ -197,15 +302,10 @@ object LoopbackGoogleOAuthServer {
         } catch (_: Exception) {
         }
 
-        val server = try {
-            ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(LOOPBACK_PORT), 50)
-                soTimeout = 180_000 // 3 minutes timeout for user to tap Allow
-            }
-        } catch (_: Exception) {
-            return@withContext null
-        }
+        val server = bindLoopbackServerSocket()
+            ?: return@withContext OAuthLaunchResult.Failure(
+                "Unable to open local Google sign-in callback on port $LOOPBACK_PORT."
+            )
         activeServerSocket = server
 
         try {
@@ -249,7 +349,8 @@ object LoopbackGoogleOAuthServer {
                     .append(URLEncoder.encode(loginHintEmail!!.trim(), "UTF-8"))
             }
 
-            val authCodeDeferred = CompletableDeferred<String?>()
+            val authCodeDeferred = CompletableDeferred<CallbackOutcome>()
+            activeAuthDeferred = authCodeDeferred
 
             // Accept incoming loopback connections concurrently so Chrome preconnect sockets never block
             val acceptJob = launch(Dispatchers.IO) {
@@ -299,13 +400,13 @@ object LoopbackGoogleOAuthServer {
                                 out.flush()
 
                                 if (!code.isNullOrBlank()) {
-                                    authCodeDeferred.complete(code)
+                                    authCodeDeferred.complete(CallbackOutcome.Code(code))
                                     try {
                                         server.close()
                                     } catch (_: Exception) {
                                     }
                                 } else if (!error.isNullOrBlank()) {
-                                    authCodeDeferred.complete(null)
+                                    authCodeDeferred.complete(CallbackOutcome.Error(error))
                                     try {
                                         server.close()
                                     } catch (_: Exception) {
@@ -320,19 +421,38 @@ object LoopbackGoogleOAuthServer {
             }
 
             // Open the Google OAuth 2.0 permission screen in the user's browser on the main thread
-            withContext(Dispatchers.Main) {
-                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrlBuilder.toString())).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val launchError = withContext(Dispatchers.Main) {
+                try {
+                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrlBuilder.toString())).apply {
+                        addCategory(Intent.CATEGORY_BROWSABLE)
+                    }
+                    val activity = findActivity(context)?.takeIf { !it.isFinishing && !it.isDestroyed }
+                    if (activity != null) {
+                        activity.startActivity(browserIntent)
+                    } else {
+                        browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        appContext.startActivity(browserIntent)
+                    }
+                    null
+                } catch (_: ActivityNotFoundException) {
+                    "No web browser found to open Google Drive permission screen."
+                } catch (ex: Exception) {
+                    ex.message ?: "Unable to open web browser for Google Drive permission."
                 }
-                appContext.startActivity(browserIntent)
             }
 
-            val finalCode = withTimeoutOrNull(180_000L) {
+            if (launchError != null) {
+                acceptJob.cancel()
+                return@withContext OAuthLaunchResult.Failure(launchError)
+            }
+
+            val outcome = withTimeoutOrNull(180_000L) {
                 authCodeDeferred.await()
             }
             acceptJob.cancel()
 
-            // Bring Encrypz MainActivity back to foreground immediately
+            // Bring Encrypz MainActivity back to foreground immediately before outbound HTTPS calls
+            // so Android/One UI background network restrictions do not block oauth2.googleapis.com DNS.
             withContext(Dispatchers.Main) {
                 try {
                     val resumeIntent = Intent(appContext, MainActivity::class.java).apply {
@@ -347,12 +467,34 @@ object LoopbackGoogleOAuthServer {
                 }
             }
 
-            if (finalCode.isNullOrBlank()) return@withContext null
+            val finalCode = when (outcome) {
+                null -> return@withContext OAuthLaunchResult.Failure(
+                    "Google Drive sign-in timed out. Tap Allow Google Drive Access to try again."
+                )
+                is CallbackOutcome.Cancelled -> return@withContext OAuthLaunchResult.Failure(
+                    "Google Drive sign-in was restarted or cancelled."
+                )
+                is CallbackOutcome.Error -> return@withContext OAuthLaunchResult.Failure(
+                    if (outcome.error == "access_denied") {
+                        "Google Drive permission was denied in browser."
+                    } else {
+                        "Google Drive sign-in error: ${outcome.error}"
+                    }
+                )
+                is CallbackOutcome.Code -> outcome.code
+            }
 
-            val bundle = exchangeCodeForTokens(finalCode, codeVerifier) ?: return@withContext null
+            waitForAppForegroundIfNeeded()
+
+            val (bundle, tokenError) = exchangeCodeForTokensWithError(appContext, finalCode, codeVerifier)
+            if (bundle == null) {
+                return@withContext OAuthLaunchResult.Failure(
+                    tokenError ?: "Failed to exchange Google authorization code for a Drive token."
+                )
+            }
             val targetEmail = bundle.email
                 ?.takeIf { it.isNotBlank() }
-                ?: fetchEmailFromUserInfo(bundle.accessToken)
+                ?: fetchEmailFromUserInfo(appContext, bundle.accessToken)
                 ?: loginHintEmail.orEmpty()
 
             val finalBundle = bundle.copy(email = targetEmail.ifBlank { bundle.email })
@@ -360,10 +502,15 @@ object LoopbackGoogleOAuthServer {
                 GoogleAuthConfig.saveGoogleEmail(appContext, targetEmail)
             }
             saveTokenBundle(appContext, targetEmail, finalBundle)
-            return@withContext finalBundle
-        } catch (_: Exception) {
-            return@withContext null
+            return@withContext OAuthLaunchResult.Success(finalBundle)
+        } catch (ex: Exception) {
+            return@withContext OAuthLaunchResult.Failure(
+                ex.message ?: "Google Drive browser permission failed."
+            )
         } finally {
+            if (activeAuthDeferred != null) {
+                activeAuthDeferred = null
+            }
             try {
                 server.close()
             } catch (_: Exception) {
@@ -374,7 +521,11 @@ object LoopbackGoogleOAuthServer {
         }
     }
 
-    private fun exchangeCodeForTokens(code: String, codeVerifier: String): OAuthTokenBundle? {
+    private suspend fun exchangeCodeForTokensWithError(
+        context: Context?,
+        code: String,
+        codeVerifier: String
+    ): Pair<OAuthTokenBundle?, String?> {
         val formBody = buildString {
             append("code=").append(URLEncoder.encode(code, "UTF-8"))
             append("&client_id=").append(URLEncoder.encode(GoogleAuthConfig.CLIENT_ID, "UTF-8"))
@@ -383,74 +534,105 @@ object LoopbackGoogleOAuthServer {
             append("&grant_type=authorization_code")
             append("&code_verifier=").append(URLEncoder.encode(codeVerifier, "UTF-8"))
         }
-        return executeTokenPost(formBody, existingRefreshToken = null)
+        return executeTokenPostWithError(context, formBody, existingRefreshToken = null)
     }
 
-    private fun exchangeRefreshToken(refreshToken: String): OAuthTokenBundle? {
+    private suspend fun exchangeRefreshToken(context: Context?, refreshToken: String): OAuthTokenBundle? {
         val formBody = buildString {
             append("refresh_token=").append(URLEncoder.encode(refreshToken, "UTF-8"))
             append("&client_id=").append(URLEncoder.encode(GoogleAuthConfig.CLIENT_ID, "UTF-8"))
             append("&client_secret=").append(URLEncoder.encode(GoogleAuthConfig.CLIENT_SECRET, "UTF-8"))
             append("&grant_type=refresh_token")
         }
-        return executeTokenPost(formBody, existingRefreshToken = refreshToken)
+        return executeTokenPostWithError(context, formBody, existingRefreshToken = refreshToken).first
     }
 
-    private fun executeTokenPost(formBody: String, existingRefreshToken: String?): OAuthTokenBundle? {
-        return try {
-            val conn = (URL(GOOGLE_TOKEN_ENDPOINT).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                connectTimeout = 15_000
-                readTimeout = 15_000
+    private suspend fun executeTokenPostWithError(
+        context: Context?,
+        formBody: String,
+        existingRefreshToken: String?
+    ): Pair<OAuthTokenBundle?, String?> {
+        var lastException: Exception? = null
+        for (attempt in 0 until 4) {
+            if (attempt > 0) {
+                waitForAppForegroundIfNeeded()
+                delay(500L * attempt)
             }
-            conn.outputStream.use { out ->
-                out.write(formBody.toByteArray(Charsets.UTF_8))
-                out.flush()
+            try {
+                val conn = openHttpConnection(context, URL(GOOGLE_TOKEN_ENDPOINT)).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                    connectTimeout = 15_000
+                    readTimeout = 15_000
+                }
+                conn.outputStream.use { out ->
+                    out.write(formBody.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                conn.disconnect()
+                if (code !in 200..299) {
+                    val errJson = runCatching { JSONObject(body) }.getOrNull()
+                    val errMsg = errJson?.optString("error_description")?.takeIf { it.isNotBlank() }
+                        ?: errJson?.optString("error")?.takeIf { it.isNotBlank() }
+                        ?: "Google OAuth token exchange failed (HTTP $code)."
+                    return null to errMsg
+                }
+
+                val json = JSONObject(body)
+                val accessToken = json.optString("access_token")
+                if (accessToken.isBlank()) return null to "Google returned an empty Drive access token."
+                val refreshToken = json.optString("refresh_token").ifBlank { existingRefreshToken.orEmpty() }.takeIf { it.isNotBlank() }
+                val expiresIn = json.optLong("expires_in", 3500L)
+                val idToken = json.optString("id_token")
+                val email = extractEmailFromIdToken(idToken)
+
+                return OAuthTokenBundle(
+                    accessToken = accessToken,
+                    refreshToken = refreshToken,
+                    email = email,
+                    expiresInSeconds = expiresIn
+                ) to null
+            } catch (ex: IOException) {
+                lastException = ex
+            } catch (ex: Exception) {
+                return null to (ex.message ?: "Google OAuth token request failed.")
             }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-            conn.disconnect()
-            if (code !in 200..299) return null
-
-            val json = JSONObject(body)
-            val accessToken = json.optString("access_token")
-            if (accessToken.isBlank()) return null
-            val refreshToken = json.optString("refresh_token").ifBlank { existingRefreshToken.orEmpty() }.takeIf { it.isNotBlank() }
-            val expiresIn = json.optLong("expires_in", 3500L)
-            val idToken = json.optString("id_token")
-            val email = extractEmailFromIdToken(idToken)
-
-            OAuthTokenBundle(
-                accessToken = accessToken,
-                refreshToken = refreshToken,
-                email = email,
-                expiresInSeconds = expiresIn
-            )
-        } catch (_: Exception) {
-            null
         }
+        val finalMsg = if (lastException is UnknownHostException) {
+            "Unable to reach Google (oauth2.googleapis.com). Make sure Encrypz is open in the foreground with internet access and tap Allow Google Drive Access again."
+        } else {
+            lastException?.message ?: "Google OAuth token request failed."
+        }
+        return null to finalMsg
     }
 
-    private fun fetchEmailFromUserInfo(accessToken: String): String? {
-        return try {
-            val conn = (URL(GOOGLE_USERINFO_ENDPOINT).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                setRequestProperty("Authorization", "Bearer $accessToken")
-                connectTimeout = 10_000
-                readTimeout = 10_000
+    private suspend fun fetchEmailFromUserInfo(context: Context?, accessToken: String): String? {
+        for (attempt in 0 until 2) {
+            if (attempt > 0) delay(300L)
+            try {
+                val conn = openHttpConnection(context, URL(GOOGLE_USERINFO_ENDPOINT)).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("Authorization", "Bearer $accessToken")
+                    connectTimeout = 10_000
+                    readTimeout = 10_000
+                }
+                val code = conn.responseCode
+                val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                conn.disconnect()
+                if (code !in 200..299) return null
+                return JSONObject(body).optString("email").takeIf { it.isNotBlank() }
+            } catch (_: IOException) {
+                // retry once
+            } catch (_: Exception) {
+                return null
             }
-            val code = conn.responseCode
-            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            conn.disconnect()
-            if (code !in 200..299) return null
-            JSONObject(body).optString("email").takeIf { it.isNotBlank() }
-        } catch (_: Exception) {
-            null
         }
+        return null
     }
 
     private fun extractEmailFromIdToken(idToken: String?): String? {
@@ -483,7 +665,7 @@ object LoopbackGoogleOAuthServer {
     private fun buildCompletionHtml(success: Boolean): String {
         val title = if (success) "Google Drive Connected" else "Authorization Cancelled"
         val subtitle = if (success) {
-            "Encrypz folder sync is active. Returning to the Encrypz app..."
+            "Authorization received! Returning to Encrypz — tap the button below if the app does not open automatically."
         } else {
             "You can return to the Encrypz app and try again."
         }
@@ -531,7 +713,7 @@ object LoopbackGoogleOAuthServer {
                 <script>
                     setTimeout(function() {
                         window.location.replace("intent://oauth-complete#Intent;scheme=encrypz;package=com.encrypz.privacy;end");
-                    }, 300);
+                    }, 50);
                 </script>
             </head>
             <body>

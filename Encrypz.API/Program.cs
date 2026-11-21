@@ -1,5 +1,3 @@
-using System.Threading.RateLimiting;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.DataProtection;
 using Encrypz.Infrastructure.Services;
 using Encrypz.API.Services;
@@ -33,18 +31,6 @@ public class Program
         builder.Services.AddHttpClient<IDriveVaultStore, DriveVaultStore>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<VaultRepository>();
-        builder.Services.AddRateLimiter(options =>
-        {
-            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-            options.AddPolicy("credentials", context => RateLimitPartition.GetFixedWindowLimiter(
-                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0
-                }));
-        });
-        builder.Services.AddHttpClient<MobileGoogleIdentity>();
-        builder.Services.AddSingleton<IMobileAccountStore, MobileAccountStore>();
         builder.Services.AddControllers();
         // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
         builder.Services.AddEndpointsApiExplorer();
@@ -79,13 +65,11 @@ public class Program
 
         app.UseCors("AllowFrontend");
 
-        app.UseRateLimiter();
         app.UseAuthentication();
         // All browser mutations must originate from an explicitly allowed frontend.
         app.Use(async (context, next) =>
         {
             if (context.Request.Path.StartsWithSegments("/api") &&
-                !context.Request.Path.StartsWithSegments("/api/mobile/accounts") &&
                 !HttpMethods.IsGet(context.Request.Method) &&
                 !HttpMethods.IsHead(context.Request.Method) &&
                 !HttpMethods.IsOptions(context.Request.Method))
@@ -125,12 +109,7 @@ public class Program
 
         app.MapControllers();
         app.MapGet("/health", () => Results.Ok(new { Status = "ok" }));
-        app.MapGet("/health/ready", async (IMobileAccountStore store, CancellationToken ct) => {
-            try { await store.Ping(ct); return Results.Ok(new { status = "ready" }); }
-            catch (Exception e) when (e is MongoDB.Driver.MongoException or TimeoutException or InvalidOperationException) {
-                return Results.StatusCode(503);
-            }
-        });
+        app.MapGet("/health/ready", () => Results.Ok(new { status = "ready", database = "none" }));
         app.MapFallbackToFile("index.html");
 
         app.Run();

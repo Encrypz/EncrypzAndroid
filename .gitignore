@@ -3,10 +3,12 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
-# dotenv files
+# dotenv and environment secret files
 .env
 .env.*
+*.env
 !.env.example
+!*.env.example
 
 # User-specific files
 *.rsuser
@@ -487,6 +489,47 @@ $RECYCLE.BIN/
 **/dist/
 *.tsbuildinfo
 
-# Android local secrets and compiled APK binaries
+# Private keys, keystores, API configs, and signed Android binaries
+**/local.properties
+!**/local.properties.example
+**/signing.properties
+!**/signing.properties.example
+**/secrets.properties
+**/secrets.json
+**/apikeys.properties
+**/appsettings.Local.json
+**/appsettings.*.local.json
+
+**/signing/
+*.jks
+*.keystore
+*.bks
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.crt
+*.cer
+*.der
+*.ppk
+*.asc
+*.gpg
+*.pepk
+id_rsa*
+id_ed25519*
+
+**/google-services.json
+**/GoogleService-Info.plist
+client_secret*.json
+*client_secret*.json
+*service-account*.json
+*service_account*.json
+firebase-adminsdk*.json
+**/credentials.json
+**/token.json
+
 *.apk
-local.properties
+*.aab
+*.apks
+*.idsig
