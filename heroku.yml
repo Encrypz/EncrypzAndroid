@@ -1,5 +1,0 @@
-build:
-  docker:
-    web: Heroku.Dockerfile
-run:
-  web: dotnet Encrypz.API.dll

@@ -1,8 +1,8 @@
-# Encrypz
+# Encrypz Android
 
-Encrypz is an encrypted personal file vault for Android (v2.0.0) that runs **100% locally on your device** with zero external database or account server required. Create **Local Device (Offline)** vaults or choose a **Folder on Phone** that works completely offline, or optionally create **Google Drive** vaults that sync directly with your Google Drive using the **Encrypz Vault v2 (`EPZ2`)** format.
+Encrypz is a zero-knowledge, serverless encrypted file vault for Android (`com.encrypz.privacy`) built with **Kotlin** and **Jetpack Compose**. Every key derivation, filename obfuscation, and file encryption runs **100% locally on your device** — no Encrypz backend server or external database is used.
 
-This repository also contains a React web client and its supporting .NET backend for browser OAuth sessions. The Android and web clients currently use different Drive storage layouts and flows; they should not be treated as interchangeable clients for the same vault.
+Create completely offline vaults in **Phone Storage** or a chosen **Folder on Phone**, or optionally sync directly to your own **Google Drive** using the **Encrypz Vault V2 (`EPZ2`)** format.
 
 ## Contents
 
@@ -11,10 +11,7 @@ This repository also contains a React web client and its supporting .NET backend
 - [Architecture and repository layout](#architecture-and-repository-layout)
 - [Requirements](#requirements)
 - [Google configuration](#google-configuration)
-- [Web & API configuration](#web--api-configuration)
-- [Android setup and APK builds](#android-setup-and-apk-builds)
-- [Web development](#web-development)
-- [Heroku deployment](#heroku-deployment)
+- [Android setup and builds](#android-setup-and-builds)
 - [Security and storage](#security-and-storage)
 - [Restore and recovery](#restore-and-recovery)
 - [Current limitations](#current-limitations)
@@ -24,127 +21,91 @@ This repository also contains a React web client and its supporting .NET backend
 
 ## Features
 
-### Android vault (100% Local & Database-Free)
+### Multi-vault & zero-server design
 
-- **Multi-Vault Manager**: Create and manage multiple **Phone Storage (Offline)** or **Folder on Phone (Offline)** vaults directly on your phone (no Google sign-in, server, or database required), as well as optional **Google Drive** synced vaults.
-- **Encrypz Vault v2 (`EPZ2`) Architecture**:
-  - `masterkey.encrypz`: `encrypz.key.v2` JSON with 256-bit primary + 256-bit HMAC master keys wrapped with RFC 7914 `scrypt` (`N=32768`, `r=8`, `p=1`, 16-byte random salt), RFC 3394 AES Key Wrap, and KDF-bound `HMAC-SHA256` integrity MAC.
-  - `vault.encrypz`: `encrypz.vault.v2` authenticated JSON manifest (`cipherSuite = ENCRYPZ_AES256_SIV_GCM_V2`) signed with `HMAC-SHA256` under the unwrapped masterkey.
-  - `vault/XX/YYYY...`: SHA-256 directory sharding with domain-separated RFC 5297 AES-256-SIV `.epz` / `.epzl` encrypted filenames.
-  - `EPZ2` 68-byte binary header + chunked **64 KiB** `AES-256-GCM` file content encryption with per-file content keys and header/chunk AAD authentication.
+- **Phone Storage (Offline)**: Encrypted vaults stored privately on your phone with zero internet permissions needed.
+- **Folder on Phone (Offline)**: Pick any folder on device storage (or SD card) via Android's Storage Access Framework (`OpenDocumentTree`); reopen existing vault folders at any time.
+- **Google Drive Vaults (Optional Direct Sync)**: Connects directly from Android to Google Drive REST v3 using native Android authorization or PKCE loopback OAuth — no intermediary backend.
+- **Encrypz Vault V2 (`EPZ2`) Format**:
+  - `masterkey.encrypz`: `encrypz.key.v2` JSON containing 256-bit primary and 256-bit HMAC master keys wrapped with RFC 7914 `scrypt` (`N=32768`, `r=8`, `p=1`, 16-byte random salt), RFC 3394 AES Key Wrap, and KDF-bound `HMAC-SHA256` integrity MAC.
+  - `vault.encrypz`: `encrypz.vault.v2` authenticated JSON manifest (`cipherSuite = ENCRYPZ_AES256_SIV_GCM_V2`) signed with `HMAC-SHA256`.
+  - `vault/XX/YYYY...`: SHA-256 directory sharding with domain-separated RFC 5297 `AES-256-SIV` `.epz` / `.epzl` encrypted filenames.
+  - `EPZ2` 68-byte binary header + **64 KiB** chunked `AES-256-GCM` content encryption with per-file content keys and header/chunk AAD authentication.
   - **Base32 Recovery Key**: Offline CRC-16/CCITT checksummed recovery key generated at vault creation to reset forgotten master passwords without any server.
-- Select up to **30 files per batch** (15 MiB per file); each selected file is encrypted on-device.
-- Browse files, create encrypted folders, search, and filter by file category.
-- Preview supported images, videos, documents, and text; create encrypted text notes.
-- Export a decrypted copy through Android's destination picker.
-- Move items to a recycle bin and restore them before permanent deletion.
 
-### Photos
+### File management & media previews
 
-- Three-column gallery grouped by original creation date, newest first.
-- Search and All / Photos / Videos filters.
-- Full-screen photo viewer with swiping, pinch zoom, and double-tap zoom.
-- Three-dot menu for download, folder move, details, and recycle-bin actions.
+- Import up to **30 files per batch** (up to **15 MiB** per file); all encryption happens on-device.
+- Browse encrypted folders, search, and filter by category (All / Photos / Videos / Documents).
+- Built-in three-column Photos timeline grouped by original creation date (newest first) with full-screen swipe/zoom viewer.
+- Encrypted text notes, in-app document/media previews, Recycle Bin restore/shredding, and plaintext export via Android's destination picker.
 
-### Access and notifications
+### Access protection & notifications
 
-- Offline master-password unlock on your phone; optional Google account selection and direct Drive OAuth when using Google Drive vaults.
-- Quick unlock with **exactly six numeric digits** (leading zeroes supported) or device biometrics.
-- Immediate vault locking when the activity goes into the background; returning requires unlocking again.
+- Master-password unlock (`12+` characters recommended at creation), optional **6-digit PIN** quick unlock (leading zeroes supported), and Android biometric/fingerprint unlock.
+- Immediate vault auto-lock when backgrounded (`onStop`), clearing active keys from memory.
 - Change Master Password (re-wraps `masterkey.encrypz` without re-encrypting files) and Recovery Key password reset.
-- Screenshot protection (`FLAG_SECURE`) enabled by default, configurable in Security.
-- In-app notification inbox with unread count and individual / all **Mark as read** actions.
-- Android system notifications limited to upload and download outcomes.
+- Screenshot and Recents preview protection (`FLAG_SECURE`) enabled by default, toggleable in Security.
+- In-app notification inbox and Android system transfer notifications.
 
 ## Getting started as a user
 
-1. Install `encrypz-android-v2.0.0.apk` (or deploy `encrypz-android-v2.0.0.aab`).
-2. Tap **Create New Vault** (or **Select Existing Vault on Phone**) and choose **Phone Storage**, **Folder on Phone**, or **Google Drive**.
-3. Enter a vault name and strong master password (12+ characters).
+1. Install the signed APK (`v2.0.0`, `com.encrypz.privacy`) or download from Google Play.
+2. On first launch, tap **Create New Vault** (or **Select Existing Vault on Phone** / **Open Existing Google Drive Vault**).
+3. Pick **Phone Storage**, **Folder on Phone**, or **Google Drive**, name your vault, and set a strong master password.
 4. Save your **Base32 Recovery Key** offline — there is no server or password-reset email.
-5. Optionally set a six-digit Quick-Unlock PIN or fingerprint unlock.
-6. Add files or folders; everything is encrypted client-side on your Android device before saving locally or syncing directly to Google Drive.
+5. Optionally enable 6-digit PIN or biometric quick unlock.
 
-Install updates over the existing app using the same package and signing certificate. Uninstalling removes app-private storage vaults (`LOCAL`), while **Folder on Phone** and **Google Drive** vaults remain intact.
+Install updates using the same signing certificate. Uninstalling removes app-private `LOCAL` vaults, while **Folder on Phone** and **Google Drive** vaults remain intact and can be reopened on reinstall.
 
 ## Architecture and repository layout
 
 ```text
-Android app (Database-Free · Zero Server)
-  |-- Phone Storage / Folder -> On-device storage (vault.encrypz, masterkey.encrypz, vault/XX/YYYY)
-  `-- Google Drive vaults ---> Google Drive REST v3 directly (vault.encrypz, masterkey.encrypz, vault/XX/YYYY)
-
-React web client --> .NET API --> Google Drive hidden appDataFolder
+Encrypz Android (100% On-Device · No Server · No External Database)
+  ├── Phone Storage / Folder on Phone ─► On-device storage (vault.encrypz, masterkey.encrypz, vault/XX/YYYY)
+  └── Google Drive Vaults ─────────────► Google Drive REST v3 directly (vault.encrypz, masterkey.encrypz, vault/XX/YYYY)
 ```
 
 | Path | Purpose |
 | --- | --- |
-| `Encrypz.Android/` | Kotlin / Jetpack Compose Android application (`v2.0.0`, 100% on-device) |
-| `Encrypz.API/` | ASP.NET Core API supporting the React web client OAuth & Drive endpoints |
-| `Encrypz.Core/` | Domain models and interfaces |
-| `Encrypz.Infrastructure/` | Drive storage and supporting infrastructure for the web client |
-| `Encrypz.UI/` | React / TypeScript / Vite web application |
-| `Encrypz.Tests/` | .NET tests |
-| `Encrypz.Android/app/src/test/` | Android JVM unit tests |
-| `Heroku.Dockerfile` | Combined web frontend and .NET API container build |
-| `heroku.yml` | Heroku container build and web process definition |
-| `.env.example` | Web/API OAuth configuration template; contains placeholders only |
-
-Android application ID: **`com.encrypz.privacy`**.
+| `Encrypz.Android/` | Kotlin / Jetpack Compose Android application (`v2.0.0`, `com.encrypz.privacy`) |
+| `Encrypz.Android/app/src/main/java/com/encrypz/privacy/crypto/vault/` | `scrypt`, RFC 3394 AES Key Wrap, RFC 5297 AES-256-SIV, `EPZ2` 64 KiB AES-256-GCM streaming crypto |
+| `Encrypz.Android/app/src/main/java/com/encrypz/privacy/vault/` | Vault engine, SAF phone folder backend, Google Drive backend, multi-vault registry |
+| `Encrypz.Android/app/src/main/java/com/encrypz/privacy/drive/` | Direct Google Drive REST v3 sync and background WorkManager uploader |
+| `Encrypz.Android/app/src/main/java/com/encrypz/privacy/auth/` | Google account chooser, PKCE loopback OAuth helper, biometrics, PIN lock |
+| `Encrypz.Android/app/src/main/java/com/encrypz/privacy/ui/` | Jetpack Compose Material 3 UI (`VaultListScreen`, `LoginScreen`, `VaultScreen`, media viewers) |
+| `Encrypz.Android/app/src/test/` | JVM unit tests (crypto vectors, Encrypz Vault V2 format, OAuth/ViewModel state, imports) |
+| `Encrypz.Android/local.properties.example` | Placeholder template for local SDK path and Google Drive OAuth config |
+| `Encrypz.Android/signing.properties.example` | Placeholder template for release keystore signing config |
 
 ## Requirements
 
-| Component | Requirement in this repository |
+| Component | Requirement |
 | --- | --- |
-| Android device | Android 7.0 / API 24 or newer (offline vaults work without internet; Google Drive vaults require Google Play services) |
-| Android tooling | Android Gradle Plugin 9.0.1 compatible Android SDK; platform 36 |
-| Java | JDK 17 toolchain configured for the Android build |
-| Gradle | Use the included wrapper |
-| Web backend | .NET 8 SDK / runtime (only needed for the web frontend) |
-| Web frontend | Node.js 24 and npm (only needed for the web frontend) |
+| Android device | Android 7.0 (API 24) or newer; `targetSdk = 36` |
+| Android SDK | Android Gradle Plugin 9.0.1 compatible SDK, Build-Tools & Platform 36 |
+| Java | JDK 17 |
+| Gradle | Included Gradle wrapper (`Encrypz.Android/gradlew`) |
 
-Dependency versions are maintained in [the Android version catalog](Encrypz.Android/gradle/libs.versions.toml), [the Android build](Encrypz.Android/app/build.gradle.kts), and [the web package manifest](Encrypz.UI/package.json).
+Dependency versions are defined in [`Encrypz.Android/gradle/libs.versions.toml`](Encrypz.Android/gradle/libs.versions.toml) and [`Encrypz.Android/app/build.gradle.kts`](Encrypz.Android/app/build.gradle.kts).
 
 ## Google configuration
 
-*(Only needed when building with Google Drive vault sync enabled; Phone Storage and Folder on Phone vaults require no Google Cloud project.)*
+*(Only needed for **Google Drive** vaults. **Phone Storage** and **Folder on Phone** vaults work completely offline without any Google Cloud configuration.)*
 
-1. Select or create a Google Cloud project and enable the **Google Drive API**.
-2. Configure the OAuth consent screen and add test users while in Testing.
-3. Create an Android OAuth client for package **`com.encrypz.privacy`** matching your APK's **SHA-1** signing fingerprint.
-4. Create/configure a Web OAuth client if using direct loopback Drive OAuth or the React web client (`http://localhost:5207/api/Auth/google-callback`).
+1. Copy [`Encrypz.Android/local.properties.example`](Encrypz.Android/local.properties.example) to `Encrypz.Android/local.properties` (gitignored).
+2. In your Google Cloud project, enable the **Google Drive API** and configure the OAuth consent screen.
+3. Create an **Android** OAuth client for package `com.encrypz.privacy` with your release/upload APK **SHA-1** fingerprint (and a second Android client for your Google Play App Signing SHA-1 if distributing via `.aab`).
+4. Optionally configure a **Web** OAuth client ID and secret in `Encrypz.Android/local.properties` with authorized redirect URI `http://localhost:5207/api/Auth/google-callback` for direct PKCE browser fallback.
 
-## Web & API configuration
+## Android setup and builds
 
-*(Optional — Android runs standalone without this API.)*
-
-Run these commands from the repository root if running the React web client locally:
-
-```bash
-cp .env.example .env
-dotnet restore Encrypz.API/Encrypz.API.csproj
-```
-
-| Setting | Purpose |
-| --- | --- |
-| `GoogleDrive__ClientId` | Backend Google OAuth web client ID (for the React web app) |
-| `GoogleDrive__ClientSecret` | Backend OAuth web client secret (for the React web app) |
-| `Frontend__Url` | Public browser frontend origin |
-| `Frontend__AllowedOrigins` | Allowed browser origins |
-| `PORT` | Supplied by Heroku in hosted web deployments |
-
-Start the API (`GET /health` and `GET /health/ready` check process health; no database is used):
-
-```bash
-dotnet run --project Encrypz.API --launch-profile http
-```
-
-## Android setup and APK builds
-
-Open **`Encrypz.Android`** in Android Studio or build from the command line:
+Open **`Encrypz.Android/`** in Android Studio or build from the command line:
 
 ```bash
 cd Encrypz.Android
+cp local.properties.example local.properties      # set sdk.dir and optional OAuth client keys
+cp signing.properties.example signing.properties  # set release keystore paths/passwords
 ./gradlew :app:testDebugUnitTest :app:bundleRelease :app:assembleRelease
 ```
 
@@ -153,61 +114,32 @@ Release outputs:
 - `Encrypz.Android/app/build/outputs/bundle/release/app-release.aab`
 - `Encrypz.Android/app/build/outputs/apk/release/app-release.apk`
 
-With `Encrypz.Android/signing.properties` configured, both `.aab` and `.apk` are signed using the release upload keystore (`CN=Encrypz Upload, O=Encrypz`).
-
-## Web development
-
-From the repository root:
-
-```bash
-npm ci --prefix Encrypz.UI
-npm run dev --prefix Encrypz.UI
-```
-
-## Heroku deployment
-
-`heroku.yml` builds `Heroku.Dockerfile` to serve the React frontend and `.NET` web API together:
-
-- Set `GoogleDrive__ClientId`, `GoogleDrive__ClientSecret`, `Frontend__Url`, and `Frontend__AllowedOrigins` in Heroku Config Vars.
-- Verify `/health` and `/health/ready` after deployment.
+`local.properties`, `signing.properties`, keystores (`*.jks`), and compiled `.apk`/`.aab` files are ignored via `.gitignore`. See [`Encrypz.Android/RELEASE.md`](Encrypz.Android/RELEASE.md) for Play Console release notes.
 
 ## Security and storage
 
-- All vault keys, `scrypt` password derivation, `AES-256-SIV` filenames, and **64 KiB** `EPZ2` `AES-256-GCM` chunk encryption execute strictly on the user's device.
+- All vault keys, `scrypt` key derivation, `AES-256-SIV` filenames, and **64 KiB** `EPZ2` `AES-256-GCM` chunk encryption run strictly on the user's Android device.
 - No password, plaintext filename, or master key ever leaves the device or touches any Encrypz server or database.
-- Android Keystore (`DeviceSecrets`) seals cached session material used for biometric/PIN quick unlock. Android cloud auto-backup is disabled in the manifest.
-- Decrypted exports are ordinary plaintext files in the destination you choose.
+- Android Keystore (`DeviceSecrets`) seals session unlock material for biometric/PIN quick unlock, and Android cloud auto-backup is disabled in `AndroidManifest.xml`.
+- Exporting a file writes an ordinary plaintext copy only to the destination chosen by the user.
 
 ## Restore and recovery
 
-- **Phone Storage / Folder on Phone vaults**: Remain on the phone; **Folder on Phone** vaults can also be reopened later via **Select Existing Vault on Phone**.
+- **Folder on Phone vaults**: Reopen anytime via **Select Existing Vault on Phone** -> pick the vault directory containing `vault.encrypz`.
 - **Google Drive vaults**: Sign in with the same Google account, open **Open Existing Google Drive Vault** to scan Drive for `vault.encrypz`, and unlock with your master password or **Recovery Key**.
-- **Forgotten Master Password**: Use **Recover with Recovery Key** on the unlock screen or vault menu to reset the password offline without re-encrypting vault files.
+- **Forgotten Master Password**: Tap **Recover with Recovery Key** on a vault card or unlock screen to reset the master password offline without re-encrypting files.
 
 ## Current limitations
 
-- **Android and web storage differ**: Android uses Encrypz Vault v2 (`EPZ2`) folders locally or in Google Drive; the web client uses hidden `appDataFolder`.
-- **Android imports support up to 30 files per batch and 15 MiB per file.**
-- **App-private Phone Storage vaults** are deleted if you uninstall the app or erase app data; choose **Folder on Phone**, **Google Drive**, or export copies to preserve data across uninstalls.
+- File imports currently support up to **30 files per batch** and **15 MiB per file**.
+- App-private **Phone Storage** vaults are removed if the app is uninstalled or app data is cleared; use **Folder on Phone**, **Google Drive**, or export backups to retain data across uninstalls.
 
 ## Testing
 
-Android unit tests:
+Run the Android JVM unit tests:
 
 ```bash
 ./Encrypz.Android/gradlew -p Encrypz.Android :app:testDebugUnitTest
-```
-
-`.NET` tests:
-
-```bash
-dotnet test Encrypz.Tests/Encrypz.Tests.csproj
-```
-
-Web tests & build:
-
-```bash
-npm test --prefix Encrypz.UI && npm run build --prefix Encrypz.UI
 ```
 
 ## Troubleshooting
@@ -215,14 +147,13 @@ npm test --prefix Encrypz.UI && npm run build --prefix Encrypz.UI
 | Symptom | Checks |
 | --- | --- |
 | Wrong master password on unlock | Verify spelling or use **Recover with Recovery Key** to set a new master password offline. |
-| `UNREGISTERED_ON_API_CONSOLE` or Google error 10 | Verify `com.encrypz.privacy`, the signing SHA-1 fingerprint, OAuth client, and enabled Google Drive API. |
-| `403: access_denied` / app is being tested | Add the signed-in Google account as a test user on your Google Cloud OAuth consent screen. |
-| Drive permission not granted | Grant Drive permission on the Google Drive vault screen or in the Security tab. |
-| APK refuses to install | Uninstall any existing `com.encrypz.privacy` signed with a different certificate before installing the release APK. |
-| Old PIN no longer works | Use **Use master password instead**, then configure a new 6-digit PIN in Security. |
+| `UNREGISTERED_ON_API_CONSOLE` or Google error 10 | Register `com.encrypz.privacy` and the APK/Play App Signing SHA-1 fingerprint in Google Cloud Credentials and enable the **Google Drive API**. |
+| `403: access_denied` during Drive OAuth | Add the Google account to **Test users** while the OAuth consent screen is in Testing. |
+| `Error 400: redirect_uri_mismatch` | Add `http://localhost:5207/api/Auth/google-callback` under **Authorised redirect URIs** on the Web OAuth client. |
+| APK refuses to install | Uninstall any existing `com.encrypz.privacy` signed with a different certificate (e.g., Play Store vs local upload key) before installing. |
 
 ## Contributing and license
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance. Never include passwords, OAuth tokens, recovery keys, or private user files in issue reports.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening pull requests. Never commit passwords, OAuth secrets, keystores, recovery keys, or user files.
 
-The repository includes the [GNU Affero General Public License v3.0](LICENSE). Refer to that file for the complete license terms.
+Licensed under the [GNU Affero General Public License v3.0](LICENSE).
